@@ -137,6 +137,11 @@ typedef void shift_func(unsigned long *d, const unsigned long *s, long h, long n
                         unsigned long lmask, unsigned long rmask);
 shift_func blit_shift4, blit_shift8;
 
+/* fastline.S */
+typedef void line_func(void *adr, unsigned long bit, long n, long eps, long e1, long e2,
+                       long xinc, long yinc, const unsigned long *c, long flags);
+line_func line_draw4, line_draw8;
+
 /* a pattern with every bit set */
 static int
 solid_pattern(const short *pattern)
@@ -977,4 +982,51 @@ long CDECL c_text_area(Virtual *vwk, short *text, long length, long dst_x, long 
         return 0;
 
     return 1;
+}
+
+/*
+ * A solid line (no style), from line.c once it has the address of the
+ * first pixel, its bit and the deltas (dx >= 0): two planes per long in
+ * assembler, the same pixels as the C loops.  Returns 0 when not handled.
+ */
+long
+fast_line(Workstation *wk, void *adr, unsigned short bit, long dx, long dy,
+          long xinc, long yinc, long pattern, unsigned long colour, long mode)
+{
+#if FAST_ASM
+    short planes = wk->screen.mfdb.bitplanes;
+    unsigned long c[4] = { 0, 0, 0, 0 };
+    long flags = 0, n, eps, e1, e2;
+    short k;
+
+    if ((planes != 4 && planes != 8) || (pattern & 0xffff) != 0xffff || mode < 1 || mode > 4)
+        return 0;
+    colour_longs(colour, planes / 2, c);
+    if (mode == 4)                      /* 1 bits in the colour's complement */
+        for (k = 0; k < 4; k++)
+            c[k] = ~c[k];
+    if (mode == 3)
+        flags |= 2;
+    if (dx >= dy)
+    {
+        n = dx;
+        e1 = 2 * dy;
+        eps = -dx;
+        e2 = 2 * dx;
+    } else
+    {
+        flags |= 1;
+        n = dy;
+        e1 = 2 * dx;
+        eps = -dy;
+        e2 = 2 * dy;
+    }
+    (planes == 4 ? line_draw4 : line_draw8)(adr, bit * 0x10001UL, n, eps, e1, e2,
+                                            xinc, yinc, c, flags);
+    return 1;
+#else
+    (void) wk; (void) adr; (void) bit; (void) dx; (void) dy;
+    (void) xinc; (void) yinc; (void) pattern; (void) colour; (void) mode;
+    return 0;
+#endif
 }

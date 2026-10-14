@@ -110,6 +110,9 @@ long CDECL c_line_draw(Virtual *vwk, long x1, long y1, long x2, long y2,
     adr += (long)y1 * vwk->real_address->screen.wrap;
     msk = 0x8000 >> (x1 & 0xf);         /* Initial bit position in word */
 
+    if (fast_line(vwk->real_address, adr, msk, dx, dy, xinc, yinc, pattern, color, mode))
+        return 1;
+
     for (plane = vwk->real_address->screen.mfdb.bitplanes - 1; plane >= 0; plane--)
     {
         void *addr;
