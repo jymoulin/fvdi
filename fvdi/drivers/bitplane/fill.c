@@ -12,6 +12,7 @@
 #include "relocate.h"
 #include "driver.h"
 #include "bitplane.h"
+#include "fast.h"
 
 #define BOOL int
 #define TRUE 1
@@ -482,6 +483,8 @@ long CDECL c_fill_area(Virtual *vwk, long x, long y, long w, long h, short *patt
   c_get_colours((Virtual *)((long)vwk & ~1), colour, &foreground, &background);
 
   (void) interior_style;
+  if (fast_fill(((Virtual *) ((long) vwk & ~1))->real_address, x, y, w, h, pattern, foreground, mode))
+    return 1;
   draw_rect(vwk, x, y, w, h, pattern, foreground, mode);
 
   return 1;

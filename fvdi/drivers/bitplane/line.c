@@ -31,6 +31,7 @@
 #include "fvdi.h"
 #include "driver.h"
 #include "bitplane.h"
+#include "fast.h"
 
 
 long CDECL c_line_draw(Virtual *vwk, long x1, long y1, long x2, long y2,
@@ -65,6 +66,23 @@ long CDECL c_line_draw(Virtual *vwk, long x1, long y1, long x2, long y2,
 
     c_get_colours(vwk, colour, &color, &dummy);
     linemask = pattern;                 /* To avoid compiler warning */
+
+    /* solid horizontal lines (window frames, menus, fill outlines) */
+    if (y1 == y2 && (pattern & 0xffff) == 0xffff && mode >= 1 && mode <= 3)
+    {
+        static const short solid[16] = { -1, -1, -1, -1, -1, -1, -1, -1,
+                                         -1, -1, -1, -1, -1, -1, -1, -1 };
+
+        if (x1 > x2)
+        {
+            long t = x1;
+
+            x1 = x2;
+            x2 = t;
+        }
+        if (fast_fill(vwk->real_address, x1, y1, x2 - x1 + 1, 1, solid, color, mode))
+            return 1;
+    }
 
     /* Make x axis always going up */
     dy = y2 - y1;

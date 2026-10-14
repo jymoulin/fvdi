@@ -13,6 +13,7 @@
 #include "relocate.h"
 #include "driver.h"
 #include "bitplane.h"
+#include "fast.h"
 
 #define DBG_BLIT 0                      /* See, what happens (a bit) */
 
@@ -953,6 +954,9 @@ long CDECL c_blit_area(Virtual *vwk, MFDB *src, long src_x, long src_y, MFDB *ds
 
     operation &= 0x0f;
 
+    if (operation == 3 && fast_blit(vwk->real_address, src, src_x, src_y, dst, dst_x, dst_y, w, h))
+        return 1;
+
     /* Check the pattern flag (bit 5) and revert to log op # */
     info.p_addr = 0;                    /* Clear pattern pointer */
 
@@ -993,6 +997,10 @@ long CDECL c_expand_area(Virtual *vwk, MFDB *src, long src_x, long src_y,
     c_get_colours((Virtual *) ((long)vwk & ~1), colour, &foreground, &background);
 
     operation = ((operation - 1) & 0x03) + 1;
+
+    if (fast_expand(vwk->real_address, src, src_x, src_y, dst, dst_x, dst_y, w, h,
+                    operation, foreground, background))
+        return 1;
 
     /* Check the pattern flag (bit 5) and revert to log op # */
     info.p_addr = 0;                    /* Get pattern pointer */

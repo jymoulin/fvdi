@@ -666,6 +666,10 @@ _default_text:
 	move.l	vwk_text_colour(a0),d0
 	swap	d0
 	move.l	d0,0(a7)
+	cmp.w	#4,vwk_mode(a0)		; Reverse transparent text puts
+	bne	.pens_done		;  the text colour where the
+	move.w	0(a7),2(a7)		;  glyphs are not, as in TOS
+.pens_done:
 
 	sub.l	#20,a7			; Create source MFDB for rendering buffer
 	move.l	a3,mfdb_address(a7)	; Start address of buffer
@@ -729,6 +733,10 @@ _default_text:
 	move.l	vwk_text_colour(a0),d5
 	swap	d5
 	move.l	d5,0(a7)
+	cmp.w	#4,vwk_mode(a0)		; Reverse transparent: see above
+	bne	.pens_done1
+	move.w	0(a7),2(a7)
+.pens_done1:
 
 	sub.l	#20,a7			; Create source MFDB for font
 	move.l	vwk_text_current_font(a0),a5	; Font structure
