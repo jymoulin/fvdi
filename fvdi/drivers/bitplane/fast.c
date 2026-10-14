@@ -118,6 +118,26 @@ put_group(unsigned long *d, unsigned short bits, unsigned short e, long mode,
 void fast8_rows(unsigned long *d, const unsigned short *s, long h, long n,
                 long dnxln, long snxln, const unsigned long *c, long mode,
                 unsigned long lmask, unsigned long rmask);
+
+/* fastfill.S */
+void fill_rows4(unsigned long *d, long h, long nmid, long nxln,
+                const unsigned short *pat, long py, const unsigned long *c,
+                long edges, unsigned long lmask, unsigned long rmask);
+void fill_rows8(unsigned long *d, long h, long nmid, long nxln,
+                const unsigned short *pat, long py, const unsigned long *c,
+                long edges, unsigned long lmask, unsigned long rmask);
+
+/* a pattern with every bit set */
+static int
+solid_pattern(const short *pattern)
+{
+    short i;
+
+    for (i = 0; i < 16; i++)
+        if (pattern[i] != -1)
+            return 0;
+    return 1;
+}
 #endif
 #ifndef FAST_ASM
 #define FAST_ASM 0
@@ -403,6 +423,41 @@ fast_fill(Workstation *wk, long x, long y, long w, long h,
         lmask &= rmask;
 
     row = (unsigned short *) ((char *) wk->screen.mfdb.address + y * nxln) + g0 * planes;
+
+#if FAST_ASM
+    /* replace mode, or a solid transparent one (the same thing): the
+     * whole rectangle in assembler */
+    if ((planes == 4 || planes == 8) && (mode == 1 || (mode == 2 && solid_pattern(pattern))))
+    {
+        unsigned long c[8];
+        long nmid, edges = 0;
+
+        for (k = 0; k < 4; k++)
+        {
+            c[k] = k < npairs ? X[k] : 0;
+            c[k + 4] = k < npairs ? B[k] : 0;
+        }
+        if (ngroups == 1)
+        {
+            nmid = lmask == 0xffff;
+            edges = !nmid;
+        } else
+        {
+            nmid = ngroups - 2;
+            if (lmask == 0xffff)
+                nmid++;
+            else
+                edges |= 1;
+            if (rmask == 0xffff)
+                nmid++;
+            else
+                edges |= 2;
+        }
+        (planes == 4 ? fill_rows4 : fill_rows8)((unsigned long *) row, h, nmid, nxln,
+            (const unsigned short *) pattern, y, c, edges, lmask * 0x10001UL, rmask * 0x10001UL);
+        return 1;
+    }
+#endif
 
     for (yy = y; yy < y + h; yy++)
     {
