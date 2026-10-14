@@ -509,8 +509,21 @@ _default_text:
 	movem.l	d1/d3,-(a7)
 	movem.l	d5/a0/a3/a5,-(a7)
 
+; Render the string at the destination's position within 16 pixels
+; (the buffer has a spare word), so that the driver needs no shift.
+; Not with effects, which widen the text.  The offset is kept in the
+; high word of the saved d3.
+	moveq	#0,d7			; (d0 is the string length)
+	tst.w	vwk_text_effects(a0)
+	bne	.no_xoff
+	move.w	16(a7),d7		; Destination x
+	and.w	#15,d7
+.no_xoff:
+	move.w	d7,20(a7)
+	bne	.do_clear		; Unused bits must be clear
 	tst.w	d4
 	beq	.no_clear
+.do_clear:
 	move.l	d5,d1
 	swap	d1
 	mulu	d5,d1
@@ -530,6 +543,7 @@ _default_text:
 	sub.l	a1,a1				; Clip rectangle
 	moveq	#5,d6				; Fake top line alignment
 	moveq	#0,d3				; Coordinates
+	move.w	20(a7),d3			;  (x offset, see above)
 	moveq	#0,d4
 	bsr	text_area
 	move.l	4(a7),a0
@@ -684,9 +698,13 @@ _default_text:
 	move.w	#1,mfdb_bitplanes(a7)	; Monochrome
 
 	sub.l	#16,a7			; Create points
-	move.l	#0,0(a7)		; Source left, top
+	move.l	d3,d0
+	swap	d0			; x offset in the buffer
+	move.w	d0,0(a7)		; Source left
+	move.w	#0,2(a7)		; Source top
 	subq.w	#1,d3
-	move.w	d3,4(a7)		; Source right
+	add.w	d3,d0
+	move.w	d0,4(a7)		; Source right
 	subq.w	#1,d5
 	move.w	d5,6(a7)		; Source bottom
 

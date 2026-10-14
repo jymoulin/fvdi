@@ -111,6 +111,18 @@ put_group(unsigned long *d, unsigned short bits, unsigned short e, long mode,
     }
 }
 
+#if defined(__mc68020__) || defined(__mc68030__) || defined(__mc68040__) || defined(__mc68060__)
+#define FAST_ASM 1
+
+/* fast8.S */
+void fast8_rows(unsigned long *d, const unsigned short *s, long h, long n,
+                long dnxln, long snxln, const unsigned long *c, long mode,
+                unsigned long lmask, unsigned long rmask);
+#endif
+#ifndef FAST_ASM
+#define FAST_ASM 0
+#endif
+
 /*
  * One line of groups: the first and last ones masked, the ones in
  * between with a loop per writing mode and number of planes, so that
@@ -204,6 +216,40 @@ ROW_FUNC(row_8, 4)
 /* the widest line handled here, in groups of 16 pixels */
 #define MAX_GROUPS 128
 
+#if FAST_ASM
+/*
+ * The text case: 8 planes, replace or transparent mode, source words
+ * already aligned on the destination groups.  Everything that does not
+ * change from one line to the next is set up once; the edge groups are
+ * done here, the ones in between by the assembler loops.
+ */
+static void
+expand8(unsigned long *d, const unsigned short *s, long h, long ngroups,
+        long dnxln, long snxln, unsigned short lmask, unsigned short rmask,
+        long mode, const unsigned long *F, const unsigned long *B, const unsigned long *X)
+{
+    unsigned long c[8];
+    long m8 = mode;
+    short k;
+
+    for (k = 0; k < 4; k++)
+    {
+        c[k] = mode == 1 ? X[k] : F[k];
+        c[k + 4] = B[k];
+    }
+    /* the common colours need less work per group */
+    if (mode == 1 && (X[0] & X[1] & X[2] & X[3]) == 0xffffffffUL &&
+        (B[0] | B[1] | B[2] | B[3]) == 0)
+        m8 = 5;
+    else if (mode == 2 && (F[0] & F[1] & F[2] & F[3]) == 0xffffffffUL)
+        m8 = 6;
+    else if (mode == 2 && (F[0] | F[1] | F[2] | F[3]) == 0)
+        m8 = 7;
+    fast8_rows(d, s, h, ngroups, dnxln, snxln, c, m8,
+               lmask * 0x10001UL, rmask * 0x10001UL);
+}
+#endif
+
 /*
  * Monochrome to colour expansion, the VDI modes:
  *   1 replace          1 bits -> fg, 0 bits -> bg
@@ -222,7 +268,7 @@ fast_expand(Workstation *wk, MFDB *src, long src_x, long src_y,
     long dnxln, snxwd;
     long g0, g1, ngroups, y;
     long s0, wfirst, wlast, wbase;
-    short planes, npairs, sh, k;
+    short planes, npairs, sh, k, direct;
 
     if (!src || !src->address || src->bitplanes != 1 || w <= 0 || h <= 0)
         return 0;
@@ -259,20 +305,39 @@ fast_expand(Workstation *wk, MFDB *src, long src_x, long src_y,
     srow = (unsigned short *) src->address + src_y * snxwd;
     dform = (unsigned short *) ((char *) dform + dst_y * dnxln) + g0 * planes;
 
+    /* no shift and every word inside the source (text rendered at the
+     * destination's position): the source line is used as it is */
+    direct = sh == 0 && wbase >= wfirst && wbase + ngroups - 1 <= wlast;
+
+#if FAST_ASM
+    if (direct && planes == 8 && (mode == 1 || mode == 2))
+    {
+        expand8((unsigned long *) dform, srow + wbase, h, ngroups, dnxln, snxwd * 2,
+                lmask, rmask, mode, F, B, X);
+        return 1;
+    }
+#endif
+
     for (y = 0; y < h; y++)
     {
-        unsigned short ab[MAX_GROUPS];
+        unsigned short abuf[MAX_GROUPS];
+        const unsigned short *ab = abuf;
         long g, wi = wbase;
         unsigned long acc;
 
-        /* the source bits of each group, aligned on the destination;
-         * words outside the source rectangle read as 0 */
-        acc = (wi >= wfirst && wi <= wlast) ? srow[wi] : 0;
-        for (g = 0; g < ngroups; g++)
+        if (direct)
+            ab = srow + wbase;
+        else
         {
-            wi++;
-            acc = (acc << 16) | ((wi >= wfirst && wi <= wlast) ? srow[wi] : 0);
-            ab[g] = (unsigned short) ((acc << sh) >> 16);
+            /* the source bits of each group, aligned on the destination;
+             * words outside the source rectangle read as 0 */
+            acc = (wi >= wfirst && wi <= wlast) ? srow[wi] : 0;
+            for (g = 0; g < ngroups; g++)
+            {
+                wi++;
+                acc = (acc << 16) | ((wi >= wfirst && wi <= wlast) ? srow[wi] : 0);
+                abuf[g] = (unsigned short) ((acc << sh) >> 16);
+            }
         }
 
         switch (npairs)
@@ -600,6 +665,210 @@ fast_blit(Workstation *wk, MFDB *src, long src_x, long src_y,
             }
         }
     }
+
+    return 1;
+}
+
+/*
+ * Text straight from the font to the screen, for the unpacked 8 pixel
+ * wide fonts (the system fonts): the words of 16 pixels are put
+ * together from the glyph bytes, already aligned on the destination,
+ * and expanded by fast_expand.  This skips the engine's rendering
+ * buffer (allocation, clearing, a second pass over the bits).
+ * Effects, offset tables and other fonts are left to the engine
+ * (return 0).
+ */
+#define TEXT_MAX_ROWS 16
+#define TPITCH 260                      /* bytes per line of the text buffer */
+
+#if FAST_ASM
+/*
+ * n (> 0) characters of a 16 line font, unpacked (16 bytes per
+ * glyph, from data), into a column of bytes each of the buffer at q.
+ * Returns 0, or -1 for a code outside the font.
+ */
+static long
+glyphs16(unsigned char *q, const short *t, long n, const unsigned char *data,
+         short low, short range)
+{
+    const unsigned char *p;
+    long c;
+
+    __asm__ volatile(
+        "1:\n\t"
+        "move.w  (%[t])+,%[c]\n\t"
+        "sub.w   %[low],%[c]\n\t"
+        "cmp.w   %[range],%[c]\n\t"
+        "bhi.s   9f\n\t"
+        "lsl.w   #4,%[c]\n\t"
+        "lea     0(%[g],%[c].w),%[p]\n\t"
+            "move.b  (%[p])+,0(%[q])\n\t"
+            "move.b  (%[p])+,260(%[q])\n\t"
+            "move.b  (%[p])+,520(%[q])\n\t"
+            "move.b  (%[p])+,780(%[q])\n\t"
+            "move.b  (%[p])+,1040(%[q])\n\t"
+            "move.b  (%[p])+,1300(%[q])\n\t"
+            "move.b  (%[p])+,1560(%[q])\n\t"
+            "move.b  (%[p])+,1820(%[q])\n\t"
+            "move.b  (%[p])+,2080(%[q])\n\t"
+            "move.b  (%[p])+,2340(%[q])\n\t"
+            "move.b  (%[p])+,2600(%[q])\n\t"
+            "move.b  (%[p])+,2860(%[q])\n\t"
+            "move.b  (%[p])+,3120(%[q])\n\t"
+            "move.b  (%[p])+,3380(%[q])\n\t"
+            "move.b  (%[p])+,3640(%[q])\n\t"
+            "move.b  (%[p])+,3900(%[q])\n\t"
+            "addq.l  #1,%[q]\n\t"
+        "subq.l  #1,%[n]\n\t"
+        "bne.s   1b\n\t"
+        "moveq   #0,%[c]\n\t"
+        "bra.s   8f\n"
+        "9:\n\t"
+        "moveq   #-1,%[c]\n"
+        "8:"
+        : [q] "+a" (q), [t] "+a" (t), [n] "+d" (n), [c] "=&d" (c), [p] "=&a" (p)
+        : [g] "a" (data), [low] "d" (low), [range] "d" (range)
+        : "cc", "memory");
+    return c;
+}
+#endif
+
+long CDECL c_text_area(Virtual *vwk, short *text, long length, long dst_x, long dst_y, short *offsets)
+{
+    static unsigned short buf[TEXT_MAX_ROWS * TPITCH / 2];
+    Workstation *wk;
+    Fontheader *font;
+    const unsigned char *data;
+    unsigned long fg, bg;
+    long h, cx1, cy1, cx2, cy2, vx1, vx2, vy1, vy2;
+    long g0, g1, ngroups, mode;
+    short low, high;
+    MFDB src;
+
+    vwk = (Virtual *) ((long) vwk & ~1);
+    wk = vwk->real_address;
+    font = vwk->text.current_font;
+    if (vwk->text.effects || offsets || !font)
+        return 0;
+    data = (const unsigned char *) font->extra.unpacked.data;
+    if (!data || font->widest.cell != 8 || font->height > TEXT_MAX_ROWS)
+        return 0;
+    if (wk->screen.mfdb.bitplanes != 8 && wk->screen.mfdb.bitplanes != 4 &&
+        wk->screen.mfdb.bitplanes != 2)
+        return 0;
+    if (length <= 0)
+        return 1;
+
+    dst_y += (&font->extra.distance.base)[vwk->text.alignment.vertical];
+    h = font->height;
+
+    /* clipping, and the screen */
+    cx1 = 0;
+    cy1 = 0;
+    cx2 = wk->screen.mfdb.width - 1;
+    cy2 = wk->screen.mfdb.height - 1;
+    if (vwk->clip.on)
+    {
+        if (vwk->clip.rectangle.x1 > cx1) cx1 = vwk->clip.rectangle.x1;
+        if (vwk->clip.rectangle.y1 > cy1) cy1 = vwk->clip.rectangle.y1;
+        if (vwk->clip.rectangle.x2 < cx2) cx2 = vwk->clip.rectangle.x2;
+        if (vwk->clip.rectangle.y2 < cy2) cy2 = vwk->clip.rectangle.y2;
+    }
+    vx1 = dst_x > cx1 ? dst_x : cx1;
+    vx2 = dst_x + length * 8 - 1 < cx2 ? dst_x + length * 8 - 1 : cx2;
+    vy1 = dst_y > cy1 ? dst_y : cy1;
+    vy2 = dst_y + h - 1 < cy2 ? dst_y + h - 1 : cy2;
+    if (vx1 > vx2 || vy1 > vy2)
+        return 1;
+
+    g0 = vx1 >> 4;
+    g1 = vx2 >> 4;
+    ngroups = g1 - g0 + 1;
+    if (ngroups > MAX_GROUPS)
+        return 0;
+
+    low = font->code.low;
+    high = font->code.high;
+
+    /* The glyph bytes are copied into a monochrome buffer, a column of
+     * bytes per character; the buffer starts one word before group g0.
+     * Character j starts at pixel base + 8 j of the buffer; when base
+     * is not a multiple of 8 the characters are put o pixels too far
+     * left, at byte (base - o) / 8 + j, and the lines shifted right. */
+    {
+        long base = dst_x - 16 * g0 + 16, o, kb, used, nrows, r0, j, k, kend;
+        unsigned char *b8 = (unsigned char *) buf;
+
+        o = base & 7;
+        kb = (base - o) / 8;
+        used = 2 * (ngroups + 2);
+        nrows = vy2 - vy1 + 1;
+        r0 = vy1 - dst_y;
+        if (used > TPITCH)
+            return 0;
+
+        /* the characters that land in the buffer, the rest cleared */
+        j = kb < 0 ? -kb : 0;
+        kend = kb + length < used ? kb + length : used;
+        for (k = 0; k < nrows; k++)
+        {
+            unsigned char *line = b8 + k * TPITCH;
+            long x;
+
+            for (x = 0; x < kb + j; x++)
+                line[x] = 0;
+            for (x = kend; x < used; x++)
+                line[x] = 0;
+        }
+#if FAST_ASM
+        if (nrows == 16 && kb + j < kend)
+        {
+            if (glyphs16(b8 + kb + j, text + j, kend - kb - j, data, low, high - low))
+                return 0;               /* the engine knows what to do */
+        } else
+#endif
+        for (; kb + j < kend; j++)
+        {
+            short c = text[j];
+            const unsigned char *gl;
+            unsigned char *q = b8 + kb + j;
+
+            if (c < low || c > high)
+                return 0;
+            gl = data + (long) (c - low) * 16 + r0;
+            for (k = 0; k < nrows; k++)
+                q[k * TPITCH] = gl[k];
+        }
+
+        if (o)
+        {
+            for (k = 0; k < nrows; k++)
+            {
+                unsigned short *w = (unsigned short *) (b8 + k * TPITCH);
+                long i;
+
+                for (i = ngroups + 1; i > 0; i--)
+                    w[i] = (unsigned short) ((((unsigned long) w[i - 1] << 16) | w[i]) >> o);
+                w[0] >>= o;
+            }
+        }
+    }
+
+    c_get_colours(vwk, ((long) vwk->text.colour.background << 16) | (unsigned short) vwk->text.colour.foreground, &fg, &bg);
+    mode = vwk->mode;
+    if (mode == 4)
+        bg = fg;                        /* as the TOS VDI does */
+
+    src.address = (short *) buf;
+    src.width = TPITCH * 8;
+    src.height = vy2 - vy1 + 1;
+    src.wdwidth = TPITCH / 2;
+    src.standard = 0;
+    src.bitplanes = 1;
+
+    if (!fast_expand(wk, &src, 16 + (vx1 & 15), 0, 0, vx1, vy1, vx2 - vx1 + 1, vy2 - vy1 + 1,
+                     mode, fg, bg))
+        return 0;
 
     return 1;
 }

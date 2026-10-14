@@ -44,7 +44,7 @@ long CDECL(*expand_area_r) (Virtual *vwk, MFDB * src, long src_x, long src_y, MF
 long CDECL(*fill_area_r) (Virtual *vwk, long x, long y, long w, long h, short *pattern, long colour, long mode, long interior_style) = c_fill_area;
 long CDECL(*fill_poly_r) (Virtual *vwk, short points[], long n, short index[], long moves, short *pattern, long colour, long mode, long interior_style) = 0;
 long CDECL(*blit_area_r) (Virtual *vwk, MFDB * src, long src_x, long src_y, MFDB * dst, long dst_x, long dst_y, long w, long h, long operation) = c_blit_area;
-long CDECL(*text_area_r) (Virtual *vwk, short *text, long length, long dst_x, long dst_y, short *offsets) = 0;
+long CDECL(*text_area_r) (Virtual *vwk, short *text, long length, long dst_x, long dst_y, short *offsets) = c_text_area;
 long CDECL(*mouse_draw_r) (Workstation *wk, long x, long y, Mouse * mouse) = c_mouse_draw;
 
 long CDECL(*get_colour_r) (Virtual *vwk, long colour) = c_get_colour;
@@ -53,7 +53,7 @@ void CDECL(*set_colours_r) (Virtual *vwk, long start, long entries, unsigned sho
 
 long wk_extend = 0;
 short accel_s = 0;
-short accel_c = A_SET_PAL | A_GET_COL | A_SET_PIX | A_GET_PIX | A_BLIT | A_FILL | A_EXPAND | A_LINE | A_MOUSE;
+short accel_c = A_SET_PAL | A_GET_COL | A_SET_PIX | A_GET_PIX | A_BLIT | A_FILL | A_EXPAND | A_LINE | A_MOUSE | A_TEXT;
 
 const Mode *graphics_mode = &mode[0];
 
