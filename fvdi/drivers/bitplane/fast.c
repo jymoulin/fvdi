@@ -119,6 +119,8 @@ typedef void rows_func(unsigned long *d, const unsigned short *s, long h, long n
                        long dnxln, long snxln, const unsigned long *c, long mode,
                        unsigned long lmask, unsigned long rmask);
 rows_func fast4_rows, fast8_rows;
+void shift_rows(unsigned short *q, const unsigned short *s, long h, long n,
+                long snxln, long sh, long flags);
 
 /* fastfill.S */
 typedef void fill_func(unsigned long *d, long h, long nmid, long nxln,
@@ -362,22 +364,14 @@ fast_expand(Workstation *wk, MFDB *src, long src_x, long src_y,
         lines = ABUF_WORDS / ngroups;
         for (y0 = 0; y0 < h; y0 += lines)
         {
-            long n = h - y0 < lines ? h - y0 : lines, g;
-            unsigned short *q = abuf;
-            const unsigned short *sr = srow + y0 * snxwd;
+            long n = h - y0 < lines ? h - y0 : lines, flags = 0;
 
-            for (y = 0; y < n; y++, sr += snxwd)
-            {
-                long wi = wbase;
-                unsigned long acc = (wi >= wfirst && wi <= wlast) ? sr[wi] : 0;
-
-                for (g = 0; g < ngroups; g++)
-                {
-                    wi++;
-                    acc = (acc << 16) | ((wi >= wfirst && wi <= wlast) ? sr[wi] : 0);
-                    *q++ = (unsigned short) ((acc << sh) >> 16);
-                }
-            }
+            /* the words in between are always inside the source */
+            if (wbase >= wfirst && wbase <= wlast)
+                flags |= 1;
+            if (wbase + ngroups >= wfirst && wbase + ngroups <= wlast)
+                flags |= 2;
+            shift_rows(abuf, srow + y0 * snxwd + wbase, n, ngroups, snxwd * 2, sh, flags);
             expand_rows((unsigned long *) ((char *) dform + y0 * dnxln), abuf, n, ngroups,
                         dnxln, ngroups * 2, lmask, rmask, mode, npairs, F, B, X);
         }

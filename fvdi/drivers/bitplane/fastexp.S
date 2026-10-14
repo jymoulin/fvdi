@@ -25,6 +25,14 @@
  * Edges: with an edge mask e, a long becomes d ^ ((d ^ new) & e); in
  * the transparent modes this is just m & e as the source.
  *
+ * void shift_rows(unsigned short *q, const unsigned short *s, long h,
+ *                 long n, long snxln, long sh, long flags)
+ *   Aligns a monochrome source on the destination groups, into q (n
+ *   words per line): word g of a line is (S[g] << sh) | (S[g+1] >>
+ *   (16 - sh)), s pointing to S[0] of the first line.  flags bit 0:
+ *   S[0] may be read (it is outside the source rectangle otherwise, and
+ *   taken as 0), bit 1: the same for S[n].
+ *
  * This software is licensed under the GNU General Public License.
  * Please, see LICENSE.TXT for further information.
  */
@@ -32,6 +40,7 @@
 	.text
 	.globl	_fast4_rows
 	.globl	_fast8_rows
+	.globl	_shift_rows
 
 #define D	48(%sp)
 #define S	52(%sp)
@@ -352,3 +361,44 @@ _fast4_rows:
 done:
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
+
+| d2 = n - 1, d3 = sh, d4 = the source words S[g]:S[g+1], d6 = flags,
+| d7 = lines left, a0 = source, a1 = q, a2 = line start, a3 = snxln
+_shift_rows:
+	movem.l	%d2-%d7/%a2-%a6,-(%sp)
+	move.l	48(%sp),%a1
+	move.l	52(%sp),%a2
+	move.l	56(%sp),%d7
+	move.l	60(%sp),%d2
+	subq.l	#1,%d2
+	move.l	64(%sp),%a3
+	move.l	68(%sp),%d3
+	move.l	72(%sp),%d6
+1:	move.l	%a2,%a0
+	moveq	#0,%d4
+	btst	#0,%d6
+	beq.s	2f
+	move.w	(%a0),%d4
+2:	addq.l	#2,%a0
+	move.w	%d2,%d1
+	beq.s	4f
+	subq.w	#1,%d1
+3:	swap	%d4
+	move.w	(%a0)+,%d4
+	move.l	%d4,%d5
+	lsl.l	%d3,%d5
+	swap	%d5
+	move.w	%d5,(%a1)+
+	dbra	%d1,3b
+4:	swap	%d4
+	clr.w	%d4
+	btst	#1,%d6
+	beq.s	5f
+	move.w	(%a0),%d4
+5:	lsl.l	%d3,%d4
+	swap	%d4
+	move.w	%d4,(%a1)+
+	add.l	%a3,%a2
+	subq.l	#1,%d7
+	bne	1b
+	bra	done
