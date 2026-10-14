@@ -856,7 +856,7 @@ long CDECL c_text_area(Virtual *vwk, short *text, long length, long dst_x, long 
     const unsigned char *data;
     unsigned long fg, bg;
     long h, cx1, cy1, cx2, cy2, vx1, vx2, vy1, vy2;
-    long g0, g1, ngroups, mode;
+    long g0, g1, ngroups, mode, sx;
     short low, high;
     MFDB src;
 
@@ -909,7 +909,8 @@ long CDECL c_text_area(Virtual *vwk, short *text, long length, long dst_x, long 
      * bytes per character; the buffer starts one word before group g0.
      * Character j starts at pixel base + 8 j of the buffer; when base
      * is not a multiple of 8 the characters are put o pixels too far
-     * left, at byte (base - o) / 8 + j, and the lines shifted right. */
+     * left, at byte (base - o) / 8 + j, and taken o pixels further left
+     * in the buffer by the expansion. */
     {
         long base = dst_x - 16 * g0 + 16, o, kb, used, nrows, r0, j, k, kend;
         unsigned char *b8 = (unsigned char *) buf;
@@ -955,18 +956,8 @@ long CDECL c_text_area(Virtual *vwk, short *text, long length, long dst_x, long 
                 q[k * TPITCH] = gl[k];
         }
 
-        if (o)
-        {
-            for (k = 0; k < nrows; k++)
-            {
-                unsigned short *w = (unsigned short *) (b8 + k * TPITCH);
-                long i;
-
-                for (i = ngroups + 1; i > 0; i--)
-                    w[i] = (unsigned short) ((((unsigned long) w[i - 1] << 16) | w[i]) >> o);
-                w[0] >>= o;
-            }
-        }
+        /* the o pixels left over are the expansion's shift */
+        sx = 16 + (vx1 & 15) - o;
     }
 
     c_get_colours(vwk, ((long) vwk->text.colour.background << 16) | (unsigned short) vwk->text.colour.foreground, &fg, &bg);
@@ -981,7 +972,7 @@ long CDECL c_text_area(Virtual *vwk, short *text, long length, long dst_x, long 
     src.standard = 0;
     src.bitplanes = 1;
 
-    if (!fast_expand(wk, &src, 16 + (vx1 & 15), 0, 0, vx1, vy1, vx2 - vx1 + 1, vy2 - vy1 + 1,
+    if (!fast_expand(wk, &src, sx, 0, 0, vx1, vy1, vx2 - vx1 + 1, vy2 - vy1 + 1,
                      mode, fg, bg))
         return 0;
 
