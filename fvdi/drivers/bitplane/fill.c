@@ -476,9 +476,21 @@ long CDECL c_fill_area(Virtual *vwk, long x, long y, long w, long h, short *patt
   unsigned long foreground;
   unsigned long background;
 
-  /* Don't understand any table operations yet */
+  /* A table operation: only y/x1/x2 spans (x = the table, y = their
+   * number in the high word, 0 in the low one) */
   if ((long)vwk & 1)
+  {
+    if ((y & 0xffff) == 0)
+    {
+      Virtual *v = (Virtual *) ((long) vwk & ~1);
+
+      c_get_colours(v, colour, &foreground, &background);
+      if (fast_spans(v->real_address, (const short *) x, (unsigned long) y >> 16,
+                     pattern, foreground, mode))
+        return 1;
+    }
     return -1;
+  }
 
   c_get_colours((Virtual *)((long)vwk & ~1), colour, &foreground, &background);
 

@@ -1030,3 +1030,52 @@ fast_line(Workstation *wk, void *adr, unsigned short bit, long dx, long dy,
     return 0;
 #endif
 }
+
+/*
+ * A table of spans (y, x1, x2, already clipped), as the engine gives
+ * for polygons, circles and ellipses: each span is one line of the
+ * assembler fills, without going through c_fill_area for each.  Solid
+ * fills in replace or transparent mode, pattern fills in replace mode.
+ * Returns 0 when not handled.
+ */
+long
+fast_spans(Workstation *wk, const short *s, long n, const short *pattern,
+           unsigned long colour, long mode)
+{
+#if FAST_ASM
+    short planes = wk->screen.mfdb.bitplanes, npairs, solid;
+    unsigned long c[4] = { 0, 0, 0, 0 };
+    long nxln = wk->screen.wrap;
+    char *base = (char *) wk->screen.mfdb.address;
+    fill_func *f;
+
+    if ((planes != 4 && planes != 8) || (mode != 1 && mode != 2))
+        return 0;
+    solid = solid_pattern(pattern);
+    if (!solid && mode != 1)
+        return 0;
+    npairs = planes / 2;
+    colour_longs(colour, npairs, c);
+    f = planes == 4 ? (solid ? fill_solid4 : fill_pat4) : (solid ? fill_solid8 : fill_pat8);
+    for (; n > 0; n--, s += 3)
+    {
+        long y = s[0], x1 = s[1], x2 = s[2], g0, ngroups;
+        unsigned short lm, rm;
+
+        if (x1 > x2)
+            continue;
+        g0 = x1 >> 4;
+        ngroups = (x2 >> 4) - g0 + 1;
+        lm = 0xffff >> (x1 & 15);
+        rm = 0xffff << (15 - (x2 & 15));
+        if (ngroups == 1)
+            lm &= rm;
+        f((unsigned long *) (base + y * nxln) + g0 * npairs, 1, ngroups - 2, nxln,
+          c, pattern, y, lm * 0x10001UL, rm * 0x10001UL);
+    }
+    return 1;
+#else
+    (void) wk; (void) s; (void) n; (void) pattern; (void) colour; (void) mode;
+    return 0;
+#endif
+}
