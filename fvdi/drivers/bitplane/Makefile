@@ -57,7 +57,7 @@ endif
 OBJECTS += $(CSRC:.c=.o)
 ifneq ($(CPU),000)
 ifneq ($(CPU),v4e)
-OBJECTS += fast8.o fastfill.o
+OBJECTS += fast8.o fastfill.o fastblit.o
 endif
 endif
 
@@ -65,6 +65,9 @@ fast8.o: fast8.S
 	$(AM_V_AS)$(CC) $(CPUOPTS) -c -o $@ $<
 
 fastfill.o: fastfill.S
+	$(AM_V_AS)$(CC) $(CPUOPTS) -c -o $@ $<
+
+fastblit.o: fastblit.S
 	$(AM_V_AS)$(CC) $(CPUOPTS) -c -o $@ $<
 
 $(OBJECTS): $(SINCSRC_GNU)

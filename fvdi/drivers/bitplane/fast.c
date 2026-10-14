@@ -125,6 +125,15 @@ typedef void fill_func(unsigned long *d, long h, long nmid, long nxln,
                        unsigned long lmask, unsigned long rmask);
 fill_func fill_solid4, fill_solid8, fill_pat4, fill_pat8;
 
+/* fastblit.S */
+void blit_copy(unsigned long *d, const unsigned long *s, long h, long nmid,
+               long dnxln, long snxln, long np,
+               unsigned long lmask, unsigned long rmask);
+typedef void shift_func(unsigned long *d, const unsigned long *s, long h, long nmid,
+                        long dnxln, long snxln, long sh, long flags,
+                        unsigned long lmask, unsigned long rmask);
+shift_func blit_shift4, blit_shift8;
+
 /* a pattern with every bit set */
 static int
 solid_pattern(const short *pattern)
@@ -616,6 +625,32 @@ fast_blit(Workstation *wk, MFDB *src, long src_x, long src_y,
         ystep = -1;
     }
     rtl = sform == dform && dst_y == src_y && dst_x > src_x;
+
+#if FAST_ASM
+    /* left to right on each line: the whole rectangle in assembler */
+    if (!rtl && (planes == 4 || planes == 8))
+    {
+        unsigned short *s = (unsigned short *) ((char *) sform + (src_y + y) * snxln) + (g0 + q) * planes;
+        unsigned short *d = (unsigned short *) ((char *) dform + (dst_y + y) * dnxln) + g0 * planes;
+        long sn = ystep * snxln, dn = ystep * dnxln;
+
+        if (sh == 0)
+            blit_copy((unsigned long *) d, (const unsigned long *) s, h, ngroups - 2,
+                      dn, sn, planes / 2, lmask * 0x10001UL, rmask * 0x10001UL);
+        else
+        {
+            long flags = 0;
+
+            if (g0 + q >= sfirst && g0 + q <= slast)
+                flags |= 1;
+            if (g1 + q + 1 >= sfirst && g1 + q + 1 <= slast)
+                flags |= 2;
+            (planes == 4 ? blit_shift4 : blit_shift8)((unsigned long *) d, (const unsigned long *) s,
+                h, ngroups - 2, dn, sn, sh, flags, lmask * 0x10001UL, rmask * 0x10001UL);
+        }
+        return 1;
+    }
+#endif
 
     for (; y >= 0 && y < h; y += ystep)
     {
