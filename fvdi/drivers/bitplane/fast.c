@@ -142,16 +142,16 @@ typedef void line_func(void *adr, unsigned long bit, long n, long eps, long e1, 
                        long xinc, long yinc, const unsigned long *c, long flags);
 line_func line_draw4, line_draw8;
 
-/* a pattern with every bit set */
+/* a pattern with every bit set (the patterns are word aligned, and
+ * the 68020+ reads longs at any even address) */
+typedef unsigned long __attribute__((may_alias)) alias_long;
+
 static int
 solid_pattern(const short *pattern)
 {
-    short i;
+    const alias_long *p = (const alias_long *) pattern;
 
-    for (i = 0; i < 16; i++)
-        if (pattern[i] != -1)
-            return 0;
-    return 1;
+    return (p[0] & p[1] & p[2] & p[3] & p[4] & p[5] & p[6] & p[7]) == 0xffffffffUL;
 }
 #endif
 #ifndef FAST_ASM

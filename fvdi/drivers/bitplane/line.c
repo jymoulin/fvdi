@@ -80,6 +80,16 @@ long CDECL c_line_draw(Virtual *vwk, long x1, long y1, long x2, long y2,
             x1 = x2;
             x2 = t;
         }
+        if (mode != 3)
+        {
+            short span[3];
+
+            span[0] = y1;
+            span[1] = x1;
+            span[2] = x2;
+            if (fast_spans(vwk->real_address, span, 1, solid, color, mode))
+                return 1;
+        }
         if (fast_fill(vwk->real_address, x1, y1, x2 - x1 + 1, 1, solid, color, mode))
             return 1;
     }
