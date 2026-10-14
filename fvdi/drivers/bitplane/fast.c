@@ -114,10 +114,11 @@ put_group(unsigned long *d, unsigned short bits, unsigned short e, long mode,
 #if defined(__mc68020__) || defined(__mc68030__) || defined(__mc68040__) || defined(__mc68060__)
 #define FAST_ASM 1
 
-/* fast8.S */
-void fast8_rows(unsigned long *d, const unsigned short *s, long h, long n,
-                long dnxln, long snxln, const unsigned long *c, long mode,
-                unsigned long lmask, unsigned long rmask);
+/* fastexp.S */
+typedef void rows_func(unsigned long *d, const unsigned short *s, long h, long n,
+                       long dnxln, long snxln, const unsigned long *c, long mode,
+                       unsigned long lmask, unsigned long rmask);
+rows_func fast4_rows, fast8_rows;
 
 /* fastfill.S */
 typedef void fill_func(unsigned long *d, long h, long nmid, long nxln,
@@ -245,36 +246,46 @@ ROW_FUNC(row_8, 4)
 
 #if FAST_ASM
 /*
- * The text case: 8 planes, replace or transparent mode, source words
- * already aligned on the destination groups.  Everything that does not
- * change from one line to the next is set up once; the edge groups are
- * done here, the ones in between by the assembler loops.
+ * 4 or 8 planes, replace or transparent mode, source words aligned on
+ * the destination groups.  Everything that does not change from one
+ * line to the next is set up once; the lines are done by the assembler
+ * loops, edges included.
  */
 static void
-expand8(unsigned long *d, const unsigned short *s, long h, long ngroups,
-        long dnxln, long snxln, unsigned short lmask, unsigned short rmask,
-        long mode, const unsigned long *F, const unsigned long *B, const unsigned long *X)
+expand_rows(unsigned long *d, const unsigned short *s, long h, long ngroups,
+            long dnxln, long snxln, unsigned short lmask, unsigned short rmask,
+            long mode, short npairs,
+            const unsigned long *F, const unsigned long *B, const unsigned long *X)
 {
-    unsigned long c[8];
-    long m8 = mode;
+    unsigned long c[8], xall = 0xffffffffUL, ball = 0, fall = 0xffffffffUL, fany = 0;
+    long m = mode;
     short k;
 
     for (k = 0; k < 4; k++)
     {
-        c[k] = mode == 1 ? X[k] : F[k];
-        c[k + 4] = B[k];
+        c[k] = k < npairs ? (mode == 1 ? X[k] : F[k]) : 0;
+        c[k + 4] = k < npairs ? B[k] : 0;
+    }
+    for (k = 0; k < npairs; k++)
+    {
+        xall &= X[k];
+        ball |= B[k];
+        fall &= F[k];
+        fany |= F[k];
     }
     /* the common colours need less work per group */
-    if (mode == 1 && (X[0] & X[1] & X[2] & X[3]) == 0xffffffffUL &&
-        (B[0] | B[1] | B[2] | B[3]) == 0)
-        m8 = 5;
-    else if (mode == 2 && (F[0] & F[1] & F[2] & F[3]) == 0xffffffffUL)
-        m8 = 6;
-    else if (mode == 2 && (F[0] | F[1] | F[2] | F[3]) == 0)
-        m8 = 7;
-    fast8_rows(d, s, h, ngroups, dnxln, snxln, c, m8,
-               lmask * 0x10001UL, rmask * 0x10001UL);
+    if (mode == 1 && xall == 0xffffffffUL && ball == 0)
+        m = 5;
+    else if (mode == 2 && fall == 0xffffffffUL)
+        m = 6;
+    else if (mode == 2 && fany == 0)
+        m = 7;
+    (npairs == 4 ? fast8_rows : fast4_rows)(d, s, h, ngroups, dnxln, snxln, c, m,
+                                            lmask * 0x10001UL, rmask * 0x10001UL);
 }
+
+/* a shifted source is aligned in here first, a band of lines at a time */
+#define ABUF_WORDS 2048
 #endif
 
 /*
@@ -337,10 +348,39 @@ fast_expand(Workstation *wk, MFDB *src, long src_x, long src_y,
     direct = sh == 0 && wbase >= wfirst && wbase + ngroups - 1 <= wlast;
 
 #if FAST_ASM
-    if (direct && planes == 8 && (mode == 1 || mode == 2))
+    if ((planes == 4 || planes == 8) && (mode == 1 || mode == 2))
     {
-        expand8((unsigned long *) dform, srow + wbase, h, ngroups, dnxln, snxwd * 2,
-                lmask, rmask, mode, F, B, X);
+        static unsigned short abuf[ABUF_WORDS];
+        long lines, y0;
+
+        if (direct)
+        {
+            expand_rows((unsigned long *) dform, srow + wbase, h, ngroups, dnxln, snxwd * 2,
+                        lmask, rmask, mode, npairs, F, B, X);
+            return 1;
+        }
+        lines = ABUF_WORDS / ngroups;
+        for (y0 = 0; y0 < h; y0 += lines)
+        {
+            long n = h - y0 < lines ? h - y0 : lines, g;
+            unsigned short *q = abuf;
+            const unsigned short *sr = srow + y0 * snxwd;
+
+            for (y = 0; y < n; y++, sr += snxwd)
+            {
+                long wi = wbase;
+                unsigned long acc = (wi >= wfirst && wi <= wlast) ? sr[wi] : 0;
+
+                for (g = 0; g < ngroups; g++)
+                {
+                    wi++;
+                    acc = (acc << 16) | ((wi >= wfirst && wi <= wlast) ? sr[wi] : 0);
+                    *q++ = (unsigned short) ((acc << sh) >> 16);
+                }
+            }
+            expand_rows((unsigned long *) ((char *) dform + y0 * dnxln), abuf, n, ngroups,
+                        dnxln, ngroups * 2, lmask, rmask, mode, npairs, F, B, X);
+        }
         return 1;
     }
 #endif

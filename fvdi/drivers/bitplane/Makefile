@@ -57,11 +57,11 @@ endif
 OBJECTS += $(CSRC:.c=.o)
 ifneq ($(CPU),000)
 ifneq ($(CPU),v4e)
-OBJECTS += fast8.o fastfill.o fastblit.o
+OBJECTS += fastexp.o fastfill.o fastblit.o
 endif
 endif
 
-fast8.o: fast8.S
+fastexp.o: fastexp.S
 	$(AM_V_AS)$(CC) $(CPUOPTS) -c -o $@ $<
 
 fastfill.o: fastfill.S
