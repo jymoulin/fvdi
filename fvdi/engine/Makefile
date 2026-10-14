@@ -20,6 +20,10 @@ include $(top_srcdir)/CONFIGVARS
 CFLAGS  = $(CPUOPTS) $(OPTS) $(WARNINGS) -I$(top_srcdir)/include -I$(top_srcdir)/modules/include
 
 LDFLAGS += --mprg-flags=0x27
+ifeq ($(MINTELF),yes)
+ # TOS starts the program at its entry point, the first line of fvdi.s
+ LDFLAGS += -e _init
+endif
 
 ifndef GIT_HASH
  GIT_HASH := $(shell git describe --always --abbrev=10)

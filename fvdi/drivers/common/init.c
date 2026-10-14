@@ -175,9 +175,17 @@ void setup_scrninfo(Device *device, const Mode *graphics_mode)
 }
 
 
+#ifdef __ELF__
+/* the ELF linker script has no _bss_start; the BSS starts at the end
+ * of the data, which it names _edata */
+extern char _bss_start[] __asm__("_edata");
+extern char _edata[] __asm__("_edata");
+extern char _end[] __asm__("_end");
+#else
 extern char _bss_start[];
 extern char _edata[];
 extern char _end[];
+#endif
 
 
 #ifdef __GNUC__

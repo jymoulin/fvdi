@@ -8,6 +8,12 @@ M68K_ATARI_MINT_CROSS := $(shell $(CROSS_SH))
 
 ifeq ($(M68K_ATARI_MINT_CROSS),yes)
  CROSSPREFIX = m68k-atari-mint
+ # only the ELF toolchain installed: use it
+ ifeq ($(shell which m68k-atari-mint-gcc 2>/dev/null),)
+  ifneq ($(shell which m68k-atari-mintelf-gcc 2>/dev/null),)
+   CROSSPREFIX = m68k-atari-mintelf
+  endif
+ endif
 
  CC     = $(CROSSPREFIX)-gcc
  AS     = $(CROSSPREFIX)-as
@@ -67,6 +73,21 @@ endif
 # If building for 68000 (no long multiply instruction),
 # we need to link with libgcc.
 LIBS := $(shell $(CC) $(CPUOPTS) --print-file-name=libgcc.a)
+
+# The ELF toolchain (m68k-atari-mintelf) differs from the a.out one in
+# two ways that matter here: C symbols get no leading underscore (the
+# assembler sources expect one) and registers need a % prefix (the
+# sources have none).  libgcc keeps its own names, so a 68000 build,
+# which calls it for long multiplications, does not link with it yet.
+# Its gcc is also recent enough to turn the loops of fVDI's own memset
+# and memcpy into calls to memset and memcpy, that is into themselves:
+# -fno-tree-loop-distribute-patterns keeps them loops.
+ifneq (,$(findstring mintelf,$(CC)))
+ MINTELF = yes
+ OPTS    += -fleading-underscore -Wa,--register-prefix-optional
+ OPTS    += -fno-tree-loop-distribute-patterns
+ ASFLAGS += -Wa,--register-prefix-optional
+endif
 
 # Set these to point to the correct directories for FreeType support!
 # Note: "freetype" is expected to be symlink to the actual source tree
