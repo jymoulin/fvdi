@@ -120,12 +120,10 @@ void fast8_rows(unsigned long *d, const unsigned short *s, long h, long n,
                 unsigned long lmask, unsigned long rmask);
 
 /* fastfill.S */
-void fill_rows4(unsigned long *d, long h, long nmid, long nxln,
-                const unsigned short *pat, long py, const unsigned long *c,
-                long edges, unsigned long lmask, unsigned long rmask);
-void fill_rows8(unsigned long *d, long h, long nmid, long nxln,
-                const unsigned short *pat, long py, const unsigned long *c,
-                long edges, unsigned long lmask, unsigned long rmask);
+typedef void fill_func(unsigned long *d, long h, long nmid, long nxln,
+                       const unsigned long *c, const short *pat, long py,
+                       unsigned long lmask, unsigned long rmask);
+fill_func fill_solid4, fill_solid8, fill_pat4, fill_pat8;
 
 /* a pattern with every bit set */
 static int
@@ -406,6 +404,33 @@ fast_fill(Workstation *wk, long x, long y, long w, long h,
     npairs = planes / 2;
     nxln = wk->screen.wrap;
 
+#if FAST_ASM
+    /* replace mode, or a solid transparent one (the same thing): the
+     * whole rectangle in assembler */
+    if ((planes == 4 || planes == 8) && (mode == 1 || mode == 2))
+    {
+        short solid = solid_pattern(pattern);
+
+        if (solid || mode == 1)
+        {
+            unsigned long c[4] = { 0, 0, 0, 0 };
+            unsigned short lm, rm;
+
+            g0 = x >> 4;
+            ngroups = ((x + w - 1) >> 4) - g0 + 1;
+            lm = 0xffff >> (x & 15);
+            rm = 0xffff << (15 - ((x + w - 1) & 15));
+            if (ngroups == 1)
+                lm &= rm;
+            colour_longs(colour, npairs, c);
+            (planes == 4 ? (solid ? fill_solid4 : fill_pat4) : (solid ? fill_solid8 : fill_pat8))
+                ((unsigned long *) ((char *) wk->screen.mfdb.address + y * nxln) + g0 * npairs,
+                 h, ngroups - 2, nxln, c, pattern, y, lm * 0x10001UL, rm * 0x10001UL);
+            return 1;
+        }
+    }
+#endif
+
     colour_longs(colour, npairs, F);
     UNROLL
     for (k = 0; k < npairs; k++)
@@ -424,40 +449,6 @@ fast_fill(Workstation *wk, long x, long y, long w, long h,
 
     row = (unsigned short *) ((char *) wk->screen.mfdb.address + y * nxln) + g0 * planes;
 
-#if FAST_ASM
-    /* replace mode, or a solid transparent one (the same thing): the
-     * whole rectangle in assembler */
-    if ((planes == 4 || planes == 8) && (mode == 1 || (mode == 2 && solid_pattern(pattern))))
-    {
-        unsigned long c[8];
-        long nmid, edges = 0;
-
-        for (k = 0; k < 4; k++)
-        {
-            c[k] = k < npairs ? X[k] : 0;
-            c[k + 4] = k < npairs ? B[k] : 0;
-        }
-        if (ngroups == 1)
-        {
-            nmid = lmask == 0xffff;
-            edges = !nmid;
-        } else
-        {
-            nmid = ngroups - 2;
-            if (lmask == 0xffff)
-                nmid++;
-            else
-                edges |= 1;
-            if (rmask == 0xffff)
-                nmid++;
-            else
-                edges |= 2;
-        }
-        (planes == 4 ? fill_rows4 : fill_rows8)((unsigned long *) row, h, nmid, nxln,
-            (const unsigned short *) pattern, y, c, edges, lmask * 0x10001UL, rmask * 0x10001UL);
-        return 1;
-    }
-#endif
 
     for (yy = y; yy < y + h; yy++)
     {
