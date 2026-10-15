@@ -684,28 +684,247 @@ b4c:
 /*
  * wk->r.expand, with the engine's registers (engine/blit.s
  * lib_vrt_cpyfm): a0 -> VDI struct, destination MFDB, VDI struct,
- * source MFDB; d0 = colours; d1/d2 = source x/y; d3-d6 = destination
- * x1, y1, x2, y2 (clipped); d7 = mode.  bp_expand_c (fast.c) draws the
- * common cases, the rest goes on to the common C glue (_c_expand);
- * every register is kept.
+ * source MFDB; d0 = colours (background in the high word); d1/d2 =
+ * source x/y; d3-d6 = destination x1, y1, x2, y2 (clipped); d7 = mode;
+ * every register is kept.  vrt_cpyfm in replace and transparent mode to
+ * a 4 plane form (the screen, or an interleaved MFDB) is set up here for
+ * fast4_rows or fast4s_rows, as expand4 in fast.c does; the rest goes
+ * on to the common C glue (_c_expand).  The set-up runs once per icon
+ * and from memory, not from the cache: it is kept short.
  */
 	.globl	_bp_expand
 
+#define MFDB_ADDRESS	0
+#define MFDB_WDWIDTH	8
+#define MFDB_PLANES	12
+#define WK_ADDRESS	24
+#define WK_PLANES	36
+#define WK_WRAP		44
+
+| the frame: the arguments of fast4_rows/fast4s_rows, then the colours
+#define A_D	0
+#define A_S	4
+#define A_H	8
+#define A_N	12
+#define A_DNX	16
+#define A_SNX	20
+#define A_C	24
+#define A_MODE	28
+#define A_LM	32
+#define A_RM	36
+#define A_SHF	40
+#define A_COL	44
+#define FRAME	76
+#define R(n)	(FRAME + 4 * (n) + 2)(%sp)	/* low word of the saved d<n> */
+
 _bp_expand:
-	movem.l	%d0-%d2/%a0-%a2,-(%sp)
-	move.w	%d7,-(%sp)
-	move.w	%d6,-(%sp)
-	move.w	%d5,-(%sp)
-	move.w	%d4,-(%sp)
-	move.w	%d3,-(%sp)
-	move.w	%d2,-(%sp)
-	move.w	%d1,-(%sp)
-	move.l	%d0,-(%sp)
-	move.l	%a0,-(%sp)
-	jsr	_bp_expand_c
-	lea	22(%sp),%sp
-	tst.l	%d0
-	movem.l	(%sp)+,%d0-%d2/%a0-%a2
+	movem.l	%d0-%d7/%a0-%a6,-(%sp)
+	lea	-FRAME(%sp),%sp
+	subq.w	#1,%d7
+	and.w	#3,%d7
+	cmp.w	#1,%d7
+	bhi	bx_no			| xor, reverse transparent
+	move.l	12(%a0),%a1		| a monochrome source
+	cmpa.w	#0,%a1
+	beq	bx_no
+	tst.l	MFDB_ADDRESS(%a1)
+	beq	bx_no
+	cmp.w	#1,MFDB_PLANES(%a1)
+	bne	bx_no
+
+	| the destination: a 4 plane MFDB, or the screen with 4 planes;
+	| d0 = bytes per line, a4 = the form
+	move.l	(%a0),%d0
+	bclr	#0,%d0
+	move.l	%d0,%a2
+	move.l	(%a2),%a2		| the workstation
+	move.l	4(%a0),%a3
+	cmpa.w	#0,%a3
 	beq.s	1f
+	move.l	MFDB_ADDRESS(%a3),%d0
+	beq.s	1f
+	cmp.l	WK_ADDRESS(%a2),%d0
+	beq.s	1f
+	cmp.w	#4,MFDB_PLANES(%a3)
+	bne	bx_no
+	move.l	%d0,%a4
+	move.w	MFDB_WDWIDTH(%a3),%d0
+	ext.l	%d0
+	lsl.l	#3,%d0
+	bra.s	2f
+1:	cmp.w	#4,WK_PLANES(%a2)
+	bne	bx_no
+	move.l	WK_ADDRESS(%a2),%a4
+	move.w	WK_WRAP(%a2),%d0
+	ext.l	%d0
+2:	move.l	%d0,A_DNX(%sp)
+
+	sub.w	%d3,%d5			| width
+	addq.w	#1,%d5
+	ble	bx_no
+	sub.w	%d4,%d6			| height
+	addq.w	#1,%d6
+	ble	bx_no
+	ext.l	%d6
+	move.l	%d6,A_H(%sp)
+	muls.w	%d4,%d0			| the first destination line
+	add.l	%d0,%a4
+	move.w	MFDB_WDWIDTH(%a1),%d0	| the first source line, a5
+	ext.l	%d0
+	add.l	%d0,%d0
+	move.l	%d0,A_SNX(%sp)
+	muls.w	%d2,%d0
+	move.l	MFDB_ADDRESS(%a1),%a5
+	add.l	%d0,%a5
+
+	| d4 = x2, d6 = groups, a4 = the first one
+	move.w	%d3,%d4
+	add.w	%d5,%d4
+	subq.w	#1,%d4
+	move.w	%d3,%d0
+	asr.w	#4,%d0
+	move.w	%d4,%d6
+	asr.w	#4,%d6
+	sub.w	%d0,%d6
+	addq.w	#1,%d6
+	ext.l	%d6
+	move.l	%d6,A_N(%sp)
+	ext.l	%d0
+	lsl.l	#3,%d0
+	add.l	%d0,%a4
+	move.l	%a4,A_D(%sp)
+
+	| the edge masks, in both halves
+	moveq	#15,%d0
+	and.w	%d3,%d0
+	moveq	#-1,%d3
+	lsr.w	%d0,%d3
+	move.w	%d3,%d0
+	swap	%d3
+	move.w	%d0,%d3
+	moveq	#15,%d0
+	and.w	%d4,%d0
+	eor.w	#15,%d0
+	moveq	#-1,%d4
+	lsl.w	%d0,%d4
+	move.w	%d4,%d0
+	swap	%d4
+	move.w	%d0,%d4
+	cmp.w	#1,%d6
+	bne.s	3f
+	and.l	%d4,%d3			| a single group: both edges
+3:	move.l	%d3,A_LM(%sp)
+	move.l	%d4,A_RM(%sp)
+
+	| the source: s0 = sx - (x1 & 15), d3 = sh and the flags of
+	| fast4s_rows, d2 = the word of the first group (wbase)
+	move.w	R(3),%d0
+	and.w	#15,%d0
+	move.w	%d1,%d2
+	sub.w	%d0,%d2
+	moveq	#15,%d3
+	and.w	%d2,%d3
+	asr.w	#4,%d2
+	move.w	%d1,%d0
+	asr.w	#4,%d0
+	cmp.w	%d0,%d2
+	bne.s	4f
+	bset	#8,%d3			| S[0] is inside the rectangle
+4:	move.w	%d1,%d0
+	add.w	%d5,%d0
+	subq.w	#1,%d0
+	asr.w	#4,%d0
+	move.w	%d2,%d4
+	add.w	%d6,%d4
+	cmp.w	%d0,%d4
+	bgt.s	5f
+	bset	#9,%d3			| and S[n]
+5:	ext.l	%d2
+	add.l	%d2,%d2
+	add.l	%d2,%a5
+	move.l	%a5,A_S(%sp)
+	move.l	%d3,A_SHF(%sp)
+
+	| the pens, then their colour longs: d2/d4 = F0 F1, d5/d6 = B0 B1
+	lea	_bp_pen,%a0
+	moveq	#0,%d0
+	move.b	FRAME+3(%sp),%d0
+	move.b	(%a0,%d0.w),%d0
+	moveq	#0,%d1
+	move.b	FRAME+1(%sp),%d1
+	move.b	(%a0,%d1.w),%d1
+	lea	epairs(%pc),%a0
+	moveq	#3,%d2
+	and.w	%d0,%d2
+	move.l	(%a0,%d2.w*4),%d2
+	lsr.w	#2,%d0
+	and.w	#3,%d0
+	move.l	(%a0,%d0.w*4),%d4
+	moveq	#3,%d5
+	and.w	%d1,%d5
+	move.l	(%a0,%d5.w*4),%d5
+	lsr.w	#2,%d1
+	and.w	#3,%d1
+	move.l	(%a0,%d1.w*4),%d6
+	lea	A_COL(%sp),%a0
+	move.l	%a0,A_C(%sp)
+	tst.w	%d7
+	bne.s	7f
+
+	| replace: X = F ^ B; all planes set on colour 0 is mode 5
+	eor.l	%d5,%d2
+	eor.l	%d6,%d4
+	moveq	#1,%d0
+	move.l	%d2,%d1
+	and.l	%d4,%d1
+	addq.l	#1,%d1
+	bne.s	6f
+	move.l	%d5,%d1
+	or.l	%d6,%d1
+	bne.s	6f
+	moveq	#5,%d0
+6:	move.l	%d0,A_MODE(%sp)
+	move.l	%d2,(%a0)		| X0
+	moveq	#15,%d1
+	and.w	%d3,%d1
+	beq.s	61f
+	move.l	%d5,4(%a0)		| shifted: X0 B0 X1 B1
+	move.l	%d4,8(%a0)
+	move.l	%d6,12(%a0)
+	bra.s	8f
+61:	move.l	%d4,4(%a0)		| aligned: X0 X1 . . B0 B1
+	move.l	%d5,16(%a0)
+	move.l	%d6,20(%a0)
+	bra.s	9f
+
+	| transparent: F; all planes set is mode 6, none mode 7
+7:	move.l	%d2,(%a0)
+	move.l	%d4,4(%a0)
+	moveq	#2,%d0
+	move.l	%d2,%d1
+	and.l	%d4,%d1
+	addq.l	#1,%d1
+	bne.s	71f
+	moveq	#6,%d0
+71:	move.l	%d2,%d1
+	or.l	%d4,%d1
+	bne.s	72f
+	moveq	#7,%d0
+72:	move.l	%d0,A_MODE(%sp)
+	moveq	#15,%d1
+	and.w	%d3,%d1
+	beq.s	9f
+8:	bsr	_fast4s_rows
+	bra.s	bx_out
+9:	bsr	_fast4_rows
+bx_out:
+	lea	FRAME(%sp),%sp
+	movem.l	(%sp)+,%d0-%d7/%a0-%a6
 	rts
-1:	jmp	_c_expand
+bx_no:
+	lea	FRAME(%sp),%sp
+	movem.l	(%sp)+,%d0-%d7/%a0-%a6
+	jmp	_c_expand
+
+	.even
+epairs:	.long	0, 0xffff0000, 0x0000ffff, 0xffffffff

@@ -344,7 +344,7 @@ static const unsigned long pair_long[4] = { 0, 0xffff0000UL, 0x0000ffffUL, 0xfff
  * buffer of c_text_area only) also sets each pixel's right neighbour:
  * the word before the source rectangle and the one after it are read.
  */
-static void
+static inline __attribute__((always_inline)) void
 expand4(unsigned short *drow, long dnxln, const unsigned short *srow, long snxwd,
         long src_x, long dst_x, long w, long h, long mode, short fg, short bg, short bold)
 {
@@ -414,36 +414,6 @@ expand4(unsigned short *drow, long dnxln, const unsigned short *srow, long snxwd
     fast4s_rows(d, srow + wbase, h, n, dnxln, snxwd * 2, c, m, lm, rm, sh);
 }
 
-/*
- * vrt_cpyfm from the engine, through bp_expand (fastexp.S) which has
- * the engine's registers: a = VDI struct, destination MFDB, VDI struct,
- * source MFDB; the destination rectangle is clipped.  4 planes, replace
- * and transparent modes; returns 0 for everything else (c_expand).
- */
-long CDECL bp_expand_c(void **a, long colours, short sx, short sy, short x1, short y1,
-                       short x2, short y2, short mode);
-
-long CDECL
-bp_expand_c(void **a, long colours, short sx, short sy, short x1, short y1,
-            short x2, short y2, short mode)
-{
-    Virtual *vwk = (Virtual *) ((long) a[0] & ~1L);
-    MFDB *src = (MFDB *) a[3];
-    unsigned short *dform;
-    long dnxln, w = x2 - x1 + 1, h = y2 - y1 + 1;
-    short planes;
-
-    mode = ((mode - 1) & 3) + 1;
-    if (mode > 2 || !src || !src->address || src->bitplanes != 1 || w <= 0 || h <= 0)
-        return 0;
-    dform = dest_form(vwk->real_address, (MFDB *) a[1], &planes, &dnxln);
-    if (planes != 4)
-        return 0;
-    expand4((unsigned short *) ((char *) dform + y1 * dnxln), dnxln,
-            (unsigned short *) src->address + sy * src->wdwidth, src->wdwidth,
-            sx, x1, w, h, mode, bp_pen[colours & 0xff], bp_pen[(colours >> 16) & 0xff], 0);
-    return 1;
-}
 #endif
 
 static long expand_general(Workstation *wk, MFDB *src, long src_x, long src_y,
