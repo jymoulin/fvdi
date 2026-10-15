@@ -190,7 +190,7 @@ fast_setup(Workstation *wk)
 #if FAST_ASM
     if (wk->r.line == c_line)
         wk->r.line = bp_line;
-    if (wk->r.expand == c_expand)
+    if (wk->r.expand == c_expand && wk->screen.mfdb.bitplanes == 4)
         wk->r.expand = bp_expand;
 #endif
 }
@@ -448,7 +448,7 @@ bp_expand_c(void **a, long colours, short sx, short sy, short x1, short y1,
 
 static long expand_general(Workstation *wk, MFDB *src, long src_x, long src_y,
                            MFDB *dst, long dst_x, long dst_y, long w, long h,
-                           long mode, unsigned long fg, unsigned long bg) __attribute__((noinline));
+                           long mode, unsigned long fg, unsigned long bg);
 
 /*
  * Monochrome to colour expansion, the VDI modes:
@@ -463,7 +463,8 @@ fast_expand(Workstation *wk, MFDB *src, long src_x, long src_y,
             long mode, unsigned long fg, unsigned long bg)
 {
 #if FAST_ASM
-    if ((mode == 1 || mode == 2) && src && src->address && src->bitplanes == 1 && w > 0 && h > 0)
+    if (wk->screen.mfdb.bitplanes == 4 && (mode == 1 || mode == 2) &&
+        src && src->address && src->bitplanes == 1 && w > 0 && h > 0)
     {
         unsigned short *dform;
         long dnxln;
@@ -1151,20 +1152,21 @@ long CDECL c_text_area(Virtual *vwk, short *text, long length, long dst_x, long 
         sx = 16 + (vx1 & 15) - o;
     }
 
-    c_get_colours(vwk, ((long) vwk->text.colour.background << 16) | (unsigned short) vwk->text.colour.foreground, &fg, &bg);
     mode = vwk->mode;
-    if (mode == 4)
-        bg = fg;                        /* as the TOS VDI does */
-
 #if FAST_ASM
-    if (bold)
+    /* 4 planes, replace and transparent: straight to the expansion */
+    if (wk->screen.mfdb.bitplanes == 4 && (mode == 1 || mode == 2))
     {
         expand4((unsigned short *) ((char *) wk->screen.mfdb.address + vy1 * wk->screen.wrap),
-                wk->screen.wrap, buf, TPITCH / 2, sx, vx1, vx2 - vx1 + 1, vy2 - vy1 + 1,
-                mode, (short) fg, (short) bg, 1);
+                wk->screen.wrap, buf, TPITCH / 2, sx, vx1, vx2 - vx1 + 1, vy2 - vy1 + 1, mode,
+                bp_pen[vwk->text.colour.foreground & 0xff], bp_pen[vwk->text.colour.background & 0xff],
+                bold);
         return 1;
     }
 #endif
+    c_get_colours(vwk, ((long) vwk->text.colour.background << 16) | (unsigned short) vwk->text.colour.foreground, &fg, &bg);
+    if (mode == 4)
+        bg = fg;                        /* as the TOS VDI does */
 
     src.address = (short *) buf;
     src.width = TPITCH * 8;

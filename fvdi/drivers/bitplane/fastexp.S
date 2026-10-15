@@ -473,9 +473,13 @@ _shift_rows:
 	.endif
 .endm
 
-| a line: left edge \le, middle groups \mid, right edge \re (d0 holds
-| the source bits when they are called)
-.macro	sline le, mid, re, name, b
+| the lines: left edge \le, middle groups \mid, right edge \re (d0
+| holds the source bits when they are called), with the edge masks \lm
+| and \rm and the line counter \cnt (registers where the mode leaves
+| some free); lines of a single group have their own loop
+.macro	sline le, mid, re, name, b, lm, rm, cnt
+	cmp.l	#1,N
+	beq	\name\()one
 \name\()line:
 	move.l	%a4,%a0
 	move.l	%a5,%a1
@@ -485,31 +489,40 @@ _shift_rows:
 	move.w	(%a1),%d7
 	swap	%d7
 1:	addq.l	#2,%a1
-	cmp.l	#1,N
-	beq	\name\()one
 	getms	\b
-	\le	LMASK
+	\le	\lm
 	lea	(%a0,%a6.l),%a3
 	cmp.l	%a3,%a0
-	beq	\name\()right
+	beq.s	\name\()right
 \name\()mid:
 	getms	\b
 	\mid
 	cmp.l	%a3,%a0
-	bne	\name\()mid
+	bne.s	\name\()mid
 \name\()right:
 	getlast	\b
-	\re	RMASK
-\name\()next:
+	\re	\rm
 	add.l	DNXLN,%a4
 	add.l	SNXLN,%a5
-	subq.l	#1,H
+	subq.l	#1,\cnt
 	bne	\name\()line
 	bra	done
 \name\()one:
+	move.l	%a4,%a0
+	move.l	%a5,%a1
+	moveq	#0,%d7
+	btst	#8,%d6
+	beq.s	1f
+	move.w	(%a1),%d7
+	swap	%d7
+1:	addq.l	#2,%a1
 	getlast	\b
-	\le	LMASK
-	bra	\name\()next
+	\le	\lm
+	add.l	DNXLN,%a4
+	add.l	SNXLN,%a5
+	subq.l	#1,\cnt
+	bne.s	\name\()one
+	bra	done
 .endm
 
 | 1: replace, X0 B0 X1 B1 in d2-d5
@@ -563,11 +576,10 @@ _shift_rows:
 .endm
 
 .macro	spl_edge mask
-	move.l	\mask,%d2
 	.rept	2
 	move.l	(%a0),%d1
 	eor.l	%d0,%d1
-	and.l	%d2,%d1
+	and.l	\mask,%d1
 	eor.l	%d1,(%a0)+
 	.endr
 .endm
@@ -621,7 +633,12 @@ _fast4s_rows:
 	move.l	SHF,%d6
 	move.l	C,%a2
 	move.l	MODE,%d0
-	btst	#10,%d6
+	cmp.l	#1,%d0
+	beq.s	1f
+	move.l	H,%d5			| the other modes keep the count,
+	move.l	LMASK,%d3		| and most of them the masks, in
+	move.l	RMASK,%d4		| registers
+1:	btst	#10,%d6
 	bne	sb
 	cmp.l	#5,%d0
 	beq	s4p
@@ -632,16 +649,16 @@ _fast4s_rows:
 	cmp.l	#2,%d0
 	beq	s4t
 	movem.l	(%a2),%d2-%d5		| X0 B0 X1 B1
-	sline	srep_edge, srep_mid, srep_edge, s4r, 0
+	sline	srep_edge, srep_mid, srep_edge, s4r, 0, LMASK, RMASK, H
 s4t:
 	movem.l	(%a2),%d2-%d3		| F0 F1
-	sline	str_edge, str_mid, str_edge, s4t, 0
+	sline	str_edge, str_mid, str_edge, s4t, 0, LMASK, RMASK, %d5
 s4p:
-	sline	spl_edge, spl_mid, spl_edge, s4p, 0
+	sline	spl_edge, spl_mid, spl_edge, s4p, 0, %d3, %d4, %d5
 s4s:
-	sline	sse_edge, sse_mid, sse_edge, s4s, 0
+	sline	sse_edge, sse_mid, sse_edge, s4s, 0, %d3, %d4, %d5
 s4c:
-	sline	scl_edge, scl_mid, scl_edge, s4c, 0
+	sline	scl_edge, scl_mid, scl_edge, s4c, 0, %d3, %d4, %d5
 
 | the same, bold
 sb:	cmp.l	#5,%d0
@@ -653,16 +670,16 @@ sb:	cmp.l	#5,%d0
 	cmp.l	#2,%d0
 	beq	b4t
 	movem.l	(%a2),%d2-%d5
-	sline	srep_edge, srep_mid, srep_edge, b4r, 1
+	sline	srep_edge, srep_mid, srep_edge, b4r, 1, LMASK, RMASK, H
 b4t:
 	movem.l	(%a2),%d2-%d3
-	sline	str_edge, str_mid, str_edge, b4t, 1
+	sline	str_edge, str_mid, str_edge, b4t, 1, LMASK, RMASK, %d5
 b4p:
-	sline	spl_edge, spl_mid, spl_edge, b4p, 1
+	sline	spl_edge, spl_mid, spl_edge, b4p, 1, %d3, %d4, %d5
 b4s:
-	sline	sse_edge, sse_mid, sse_edge, b4s, 1
+	sline	sse_edge, sse_mid, sse_edge, b4s, 1, %d3, %d4, %d5
 b4c:
-	sline	scl_edge, scl_mid, scl_edge, b4c, 1
+	sline	scl_edge, scl_mid, scl_edge, b4c, 1, %d3, %d4, %d5
 
 /*
  * wk->r.expand, with the engine's registers (engine/blit.s
