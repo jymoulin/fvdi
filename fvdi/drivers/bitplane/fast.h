@@ -20,4 +20,6 @@ long fast_spans(Workstation *wk, const short *s, long n, const short *pattern,
 long fast_line(Workstation *wk, void *adr, unsigned short bit, long dx, long dy,
                long xinc, long yinc, long pattern, unsigned long colour, long mode);
 
+void fast_setup(Workstation *wk);
+
 #endif

@@ -141,6 +141,15 @@ shift_func blit_shift4, blit_shift8;
 typedef void line_func(void *adr, unsigned long bit, long n, long eps, long e1, long e2,
                        long xinc, long yinc, const unsigned long *c, long flags);
 line_func line_draw4, line_draw8;
+long CDECL bp_line(Virtual *vwk, DrvLine *pars);   /* register interface */
+
+/* the members bp_line reads */
+#define OFF(t, m) __builtin_offsetof(t, m)
+_Static_assert(OFF(Virtual, real_address) == 0 && OFF(Virtual, clip.rectangle.x1) == 92 &&
+               OFF(Virtual, clip.rectangle.y1) == 94 && OFF(Virtual, clip.rectangle.x2) == 96 &&
+               OFF(Virtual, clip.rectangle.y2) == 98, "bp_line: Virtual layout");
+_Static_assert(OFF(Workstation, screen.mfdb.address) == 24 && OFF(Workstation, screen.mfdb.bitplanes) == 36 &&
+               OFF(Workstation, screen.wrap) == 44, "bp_line: Workstation layout");
 
 /* a pattern with every bit set (the patterns are word aligned, and
  * the 68020+ reads longs at any even address) */
@@ -157,6 +166,27 @@ solid_pattern(const short *pattern)
 #ifndef FAST_ASM
 #define FAST_ASM 0
 #endif
+
+/* the pen of each VDI colour index (x_get_colour), for the assembler */
+unsigned char bp_pen[256];
+
+/*
+ * Once the screen is known: the pen table, and the entries that take
+ * the engine's registers directly instead of going through the C glue
+ * of drivers/common (only where that glue was chosen, A_LINE on).
+ */
+void
+fast_setup(Workstation *wk)
+{
+    short i;
+
+    for (i = 0; i < 256; i++)
+        bp_pen[i] = (unsigned char) x_get_colour(wk, i);
+#if FAST_ASM
+    if (wk->r.line == c_line)
+        wk->r.line = bp_line;
+#endif
+}
 
 /*
  * One line of groups: the first and last ones masked, the ones in

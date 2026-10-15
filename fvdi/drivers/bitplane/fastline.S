@@ -118,3 +118,162 @@ _line_draw8:
 done:
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
+
+/*
+ * long bp_line(...): the driver's line entry (wk->r.line), with the
+ * engine's register interface (engine/draw.s): a0 = the VDI struct (an
+ * odd address marks a table), d0 = colours (foreground in the low word),
+ * d1-d4 = x1, y1, x2, y2, d5 = pattern, d6 = mode; every register is
+ * kept.  A solid horizontal line in replace or transparent mode on 4 or
+ * 8 planes is drawn here: clipped, its pen from bp_pen, then edges and
+ * plain writes in between.  Anything else goes on to the common C glue
+ * (_c_line), registers untouched.
+ */
+	.globl	_bp_line
+
+/* the Virtual and Workstation members used (checked in fast.c) */
+#define VWK_CLIP_X1	92
+#define VWK_CLIP_Y1	94
+#define VWK_CLIP_X2	96
+#define VWK_CLIP_Y2	98
+#define WK_ADDRESS	24
+#define WK_PLANES	36
+#define WK_WRAP		44
+
+| one edge long: d ^ ((d ^ c) & m)
+.macro	hedge c, m
+	move.l	(%a2),%d7
+	eor.l	\c,%d7
+	and.l	\m,%d7
+	eor.l	%d7,(%a2)+
+.endm
+
+| the colour long of planes 2k and 2k+1 from the pen in d7 (kept)
+.macro	hcolour k, reg
+	move.w	%d7,\reg
+	.if	\k
+	lsr.w	#2*\k,\reg
+	.endif
+	and.w	#3,\reg
+	move.l	(%a1,\reg\().w*4),\reg
+.endm
+
+_bp_line:
+	cmp.w	%d2,%d4
+	bne	9f
+	cmp.w	#-1,%d5
+	bne	9f
+	movem.l	%d0-%d7/%a0-%a2,-(%sp)
+	move.l	%a0,%d7
+	btst	#0,%d7
+	bne	7f			| a table
+	moveq	#-1,%d7
+	add.w	%d6,%d7
+	cmp.w	#1,%d7
+	bhi	7f			| not replace or transparent
+	move.l	(%a0),%a1		| the workstation
+	move.w	WK_PLANES(%a1),%d7
+	cmp.w	#4,%d7
+	beq.s	1f
+	cmp.w	#8,%d7
+	bne	7f
+1:	cmp.w	%d1,%d3
+	bge.s	2f
+	exg	%d1,%d3
+2:	cmp.w	VWK_CLIP_Y1(%a0),%d2
+	blt	8f
+	cmp.w	VWK_CLIP_Y2(%a0),%d2
+	bgt	8f
+	cmp.w	VWK_CLIP_X1(%a0),%d1
+	bge.s	3f
+	move.w	VWK_CLIP_X1(%a0),%d1
+3:	cmp.w	VWK_CLIP_X2(%a0),%d3
+	ble.s	4f
+	move.w	VWK_CLIP_X2(%a0),%d3
+4:	cmp.w	%d1,%d3
+	blt	8f
+
+	| a2 = first group, d6 = groups - 1, d4/d5 = left/right masks
+	move.l	WK_ADDRESS(%a1),%a2
+	move.w	WK_WRAP(%a1),%d4
+	muls.w	%d2,%d4
+	add.l	%d4,%a2
+	move.w	%d1,%d4
+	lsr.w	#4,%d4
+	move.w	%d3,%d6
+	lsr.w	#4,%d6
+	sub.w	%d4,%d6
+	mulu.w	%d7,%d4
+	add.l	%d4,%d4
+	add.l	%d4,%a2
+	moveq	#15,%d2
+	and.w	%d1,%d2
+	moveq	#-1,%d4
+	lsr.w	%d2,%d4
+	move.w	%d4,%d2
+	swap	%d4
+	move.w	%d2,%d4
+	moveq	#15,%d2
+	and.w	%d3,%d2
+	eor.w	#15,%d2
+	moveq	#-1,%d5
+	lsl.w	%d2,%d5
+	move.w	%d5,%d2
+	swap	%d5
+	move.w	%d2,%d5
+	tst.w	%d6
+	bne.s	5f
+	and.l	%d5,%d4			| a single group: both edges
+5:	move.w	%d7,%a0			| planes
+	moveq	#0,%d7
+	move.b	3(%sp),%d7		| foreground (low byte of the saved d0)
+	lea	_bp_pen,%a1
+	move.b	(%a1,%d7.w),%d7
+	lea	hpairs(%pc),%a1
+	cmp.w	#8,%a0
+	beq	h8
+
+	hcolour	0, %d0
+	hcolour	1, %d1
+	hedge	%d0, %d4
+	hedge	%d1, %d4
+	subq.w	#1,%d6			| groups in between
+	bmi.s	8f			| a single group
+	beq.s	61f
+	subq.w	#1,%d6
+60:	move.l	%d0,(%a2)+
+	move.l	%d1,(%a2)+
+	dbra	%d6,60b
+61:	hedge	%d0, %d5
+	hedge	%d1, %d5
+8:	movem.l	(%sp)+,%d0-%d7/%a0-%a2
+	rts
+
+7:	movem.l	(%sp)+,%d0-%d7/%a0-%a2
+9:	jmp	_c_line
+
+h8:	hcolour	3, %d3
+	hcolour	2, %d2
+	hcolour	1, %d1
+	hcolour	0, %d0
+	hedge	%d0, %d4
+	hedge	%d1, %d4
+	hedge	%d2, %d4
+	hedge	%d3, %d4
+	subq.w	#1,%d6
+	bmi	8b
+	beq.s	81f
+	subq.w	#1,%d6
+80:	move.l	%d0,(%a2)+
+	move.l	%d1,(%a2)+
+	move.l	%d2,(%a2)+
+	move.l	%d3,(%a2)+
+	dbra	%d6,80b
+81:	hedge	%d0, %d5
+	hedge	%d1, %d5
+	hedge	%d2, %d5
+	hedge	%d3, %d5
+	bra	8b
+
+	.even
+hpairs:	.long	0, 0xffff0000, 0x0000ffff, 0xffffffff

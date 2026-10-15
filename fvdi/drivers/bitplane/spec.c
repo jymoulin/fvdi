@@ -12,6 +12,7 @@
 #include "os.h"
 #include "driver.h"
 #include "bitplane.h"
+#include "fast.h"
 #include "string/memset.h"
 
 #if 0
@@ -221,6 +222,7 @@ long initialize(Virtual *vwk)
         return 0;
     }
     setup_scrninfo(me->device, graphics_mode);
+    fast_setup(wk);
 
     PRINTF(("%dx%dx%d screen at %08lx\n", wk->screen.mfdb.width, wk->screen.mfdb.height, wk->screen.mfdb.bitplanes,
             (long) wk->screen.mfdb.address));
