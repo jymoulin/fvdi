@@ -402,3 +402,245 @@ _shift_rows:
 	subq.l	#1,%d7
 	bne	1b
 	bra	done
+
+/*
+ * void fast4s_rows(unsigned long *d, const unsigned short *s, long h,
+ *                  long n, long dnxln, long snxln,
+ *                  const unsigned long *c, long mode,
+ *                  unsigned long lmask, unsigned long rmask, long shf)
+ *
+ * 4 planes, the source shifted on the fly: group g of a line takes
+ * (S[g] << sh) | (S[g+1] >> (16 - sh)), s pointing to S[0] of the first
+ * line.  shf = sh | flag0 << 8 | flag1 << 9: S[0], S[n] may be read (they
+ * are outside the source rectangle otherwise, taken as 0; S[1] to S[n-1]
+ * always are inside).  The other arguments are those of fast4_rows,
+ * except c: X0 B0 X1 B1 in replace mode, F0 F1 in transparent mode.
+ * Words of the source that are 0 leave the screen alone in the
+ * transparent modes.
+ */
+	.globl	_fast4s_rows
+
+#define SHF	88(%sp)
+
+| d0 = the source bits of the next group in both halves; d7 = the
+| source window, its high word S[g] on entry, S[g+1] on exit
+.macro	shiftm
+	move.l	%d7,%d0
+	lsl.l	%d6,%d0
+	swap	%d7
+	move.l	%d0,%d1
+	swap	%d1
+	move.w	%d1,%d0
+.endm
+
+.macro	getms
+	move.w	(%a1)+,%d7
+	shiftm
+.endm
+
+| the last group of a line: S[n] only if it may be read
+.macro	getlast
+	btst	#9,%d6
+	beq.s	1f
+	move.w	(%a1)+,%d7
+	bra.s	2f
+1:	clr.w	%d7
+2:	shiftm
+.endm
+
+| a line: left edge \le, middle groups \mid, right edge \re (d0 holds
+| the source bits when they are called)
+.macro	sline le, mid, re, name
+\name\()line:
+	move.l	%a4,%a0
+	move.l	%a5,%a1
+	moveq	#0,%d7
+	btst	#8,%d6
+	beq.s	1f
+	move.w	(%a1),%d7
+	swap	%d7
+1:	addq.l	#2,%a1
+	cmp.l	#1,N
+	beq	\name\()one
+	getms
+	\le	LMASK
+	lea	(%a0,%a6.l),%a3
+	cmp.l	%a3,%a0
+	beq	\name\()right
+\name\()mid:
+	getms
+	\mid
+	cmp.l	%a3,%a0
+	bne	\name\()mid
+\name\()right:
+	getlast
+	\re	RMASK
+\name\()next:
+	add.l	DNXLN,%a4
+	add.l	SNXLN,%a5
+	subq.l	#1,H
+	bne	\name\()line
+	bra	done
+\name\()one:
+	getlast
+	\le	LMASK
+	bra	\name\()next
+.endm
+
+| 1: replace, X0 B0 X1 B1 in d2-d5
+.macro	srep_mid
+	move.l	%d0,%d1
+	and.l	%d2,%d1
+	eor.l	%d3,%d1
+	move.l	%d1,(%a0)+
+	and.l	%d4,%d0
+	eor.l	%d5,%d0
+	move.l	%d0,(%a0)+
+.endm
+
+| d6 is borrowed for the old screen long, and reloaded
+.macro	srep_edge mask
+	move.l	%d0,%d1
+	and.l	%d2,%d1
+	eor.l	%d3,%d1
+	move.l	(%a0),%d6
+	eor.l	%d6,%d1
+	and.l	\mask,%d1
+	eor.l	%d1,(%a0)+
+	and.l	%d4,%d0
+	eor.l	%d5,%d0
+	move.l	(%a0),%d6
+	eor.l	%d6,%d0
+	and.l	\mask,%d0
+	eor.l	%d0,(%a0)+
+	move.l	SHF,%d6
+.endm
+
+| 2: transparent, F0 F1 in d2/d3
+.macro	str_mid
+	tst.l	%d0
+	beq.s	8f
+	tr_body	2
+	bra.s	9f
+8:	addq.l	#8,%a0
+9:
+.endm
+
+.macro	str_edge mask
+	and.l	\mask,%d0
+	tr_body	2
+.endm
+
+| 5: replace, all planes set on colour 0
+.macro	spl_mid
+	move.l	%d0,(%a0)+
+	move.l	%d0,(%a0)+
+.endm
+
+.macro	spl_edge mask
+	move.l	\mask,%d2
+	.rept	2
+	move.l	(%a0),%d1
+	eor.l	%d0,%d1
+	and.l	%d2,%d1
+	eor.l	%d1,(%a0)+
+	.endr
+.endm
+
+| 6: transparent, all planes set
+.macro	sse_mid
+	tst.l	%d0
+	beq.s	8f
+	or.l	%d0,(%a0)+
+	or.l	%d0,(%a0)+
+	bra.s	9f
+8:	addq.l	#8,%a0
+9:
+.endm
+
+.macro	sse_edge mask
+	and.l	\mask,%d0
+	or.l	%d0,(%a0)+
+	or.l	%d0,(%a0)+
+.endm
+
+| 7: transparent, all planes cleared
+.macro	scl_mid
+	tst.l	%d0
+	beq.s	8f
+	not.l	%d0
+	and.l	%d0,(%a0)+
+	and.l	%d0,(%a0)+
+	bra.s	9f
+8:	addq.l	#8,%a0
+9:
+.endm
+
+.macro	scl_edge mask
+	and.l	\mask,%d0
+	not.l	%d0
+	and.l	%d0,(%a0)+
+	and.l	%d0,(%a0)+
+.endm
+
+_fast4s_rows:
+	movem.l	%d2-%d7/%a2-%a6,-(%sp)
+	move.l	D,%a4
+	move.l	S,%a5
+	move.l	N,%d0
+	subq.l	#2,%d0
+	bpl.s	1f
+	moveq	#0,%d0
+1:	lsl.l	#3,%d0
+	move.l	%d0,%a6			| bytes of middle groups per line
+	move.l	SHF,%d6
+	move.l	C,%a2
+	move.l	MODE,%d0
+	cmp.l	#5,%d0
+	beq	s4p
+	cmp.l	#6,%d0
+	beq	s4s
+	cmp.l	#7,%d0
+	beq	s4c
+	cmp.l	#2,%d0
+	beq	s4t
+	movem.l	(%a2),%d2-%d5		| X0 B0 X1 B1
+	sline	srep_edge, srep_mid, srep_edge, s4r
+s4t:
+	movem.l	(%a2),%d2-%d3		| F0 F1
+	sline	str_edge, str_mid, str_edge, s4t
+s4p:
+	sline	spl_edge, spl_mid, spl_edge, s4p
+s4s:
+	sline	sse_edge, sse_mid, sse_edge, s4s
+s4c:
+	sline	scl_edge, scl_mid, scl_edge, s4c
+
+/*
+ * wk->r.expand, with the engine's registers (engine/blit.s
+ * lib_vrt_cpyfm): a0 -> VDI struct, destination MFDB, VDI struct,
+ * source MFDB; d0 = colours; d1/d2 = source x/y; d3-d6 = destination
+ * x1, y1, x2, y2 (clipped); d7 = mode.  bp_expand_c (fast.c) draws the
+ * common cases, the rest goes on to the common C glue (_c_expand);
+ * every register is kept.
+ */
+	.globl	_bp_expand
+
+_bp_expand:
+	movem.l	%d0-%d2/%a0-%a2,-(%sp)
+	move.w	%d7,-(%sp)
+	move.w	%d6,-(%sp)
+	move.w	%d5,-(%sp)
+	move.w	%d4,-(%sp)
+	move.w	%d3,-(%sp)
+	move.w	%d2,-(%sp)
+	move.w	%d1,-(%sp)
+	move.l	%d0,-(%sp)
+	move.l	%a0,-(%sp)
+	jsr	_bp_expand_c
+	lea	22(%sp),%sp
+	tst.l	%d0
+	movem.l	(%sp)+,%d0-%d2/%a0-%a2
+	beq.s	1f
+	rts
+1:	jmp	_c_expand

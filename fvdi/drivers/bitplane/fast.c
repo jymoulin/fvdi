@@ -119,6 +119,11 @@ typedef void rows_func(unsigned long *d, const unsigned short *s, long h, long n
                        long dnxln, long snxln, const unsigned long *c, long mode,
                        unsigned long lmask, unsigned long rmask);
 rows_func fast4_rows, fast8_rows;
+void fast4s_rows(unsigned long *d, const unsigned short *s, long h, long n,
+                 long dnxln, long snxln, const unsigned long *c, long mode,
+                 unsigned long lmask, unsigned long rmask, long shf);
+void CDECL bp_expand(Virtual *vwk, MFDB *src, long src_x, long src_y, MFDB *dst, long dst_x,
+                     long dst_y, long w, long h, long operation, long colour); /* registers */
 void shift_rows(unsigned short *q, const unsigned short *s, long h, long n,
                 long snxln, long sh, long flags);
 
@@ -185,6 +190,8 @@ fast_setup(Workstation *wk)
 #if FAST_ASM
     if (wk->r.line == c_line)
         wk->r.line = bp_line;
+    if (wk->r.expand == c_expand)
+        wk->r.expand = bp_expand;
 #endif
 }
 
@@ -325,6 +332,110 @@ expand_rows(unsigned long *d, const unsigned short *s, long h, long ngroups,
 #define ABUF_WORDS 2048
 #endif
 
+#if FAST_ASM
+/* the colour long of two planes from their two pen bits */
+static const unsigned long pair_long[4] = { 0, 0xffff0000UL, 0x0000ffffUL, 0xffffffffUL };
+
+/*
+ * 4 planes, replace or transparent mode, a source at any position: the
+ * whole rectangle (clipped, w and h > 0) in one assembler call, with
+ * the set-up kept short since icons are small.  drow and srow are the
+ * first destination and source lines, fg and bg pens.
+ */
+static void
+expand4(unsigned short *drow, long dnxln, const unsigned short *srow, long snxwd,
+        long src_x, long dst_x, long w, long h, long mode, short fg, short bg)
+{
+    unsigned long c[8], f0, f1, b0, b1, lm, rm;
+    unsigned long *d = (unsigned long *) drow + (dst_x >> 4) * 2;
+    long n = ((dst_x + w - 1) >> 4) - (dst_x >> 4) + 1;
+    long s0 = src_x - (dst_x & 15);
+    long sh = s0 & 15, wbase = s0 >> 4, m = mode;
+
+    lm = 0xffffU >> (dst_x & 15);
+    rm = (unsigned short) (0xffffU << (15 - ((dst_x + w - 1) & 15)));
+    if (n == 1)
+        lm &= rm;
+    f0 = pair_long[fg & 3];
+    f1 = pair_long[(fg >> 2) & 3];
+    b0 = pair_long[bg & 3];
+    b1 = pair_long[(bg >> 2) & 3];
+
+    /* the layouts: fast4_rows X0 X1 . . B0 B1 (or F0 F1), fast4s_rows
+     * X0 B0 X1 B1 (or F0 F1) */
+    if (mode == 1)
+    {
+        c[0] = f0 ^ b0;
+        c[1] = f1 ^ b1;
+        c[4] = b0;
+        c[5] = b1;
+        if ((c[0] & c[1]) == 0xffffffffUL && (b0 | b1) == 0)
+            m = 5;
+    } else
+    {
+        c[0] = f0;
+        c[1] = f1;
+        if ((f0 & f1) == 0xffffffffUL)
+            m = 6;
+        else if ((f0 | f1) == 0)
+            m = 7;
+    }
+    lm *= 0x10001UL;
+    rm *= 0x10001UL;
+
+    /* aligned: every source word is inside the rectangle */
+    if (sh == 0)
+    {
+        fast4_rows(d, srow + wbase, h, n, dnxln, snxwd * 2, c, m, lm, rm);
+        return;
+    }
+    if (mode == 1)
+    {
+        c[2] = c[1];
+        c[1] = c[4];
+        c[3] = c[5];
+    }
+    sh |= wbase == (src_x >> 4) ? 0x100 : 0;
+    sh |= wbase + n <= (src_x + w - 1) >> 4 ? 0x200 : 0;
+    fast4s_rows(d, srow + wbase, h, n, dnxln, snxwd * 2, c, m, lm, rm, sh);
+}
+
+/*
+ * vrt_cpyfm from the engine, through bp_expand (fastexp.S) which has
+ * the engine's registers: a = VDI struct, destination MFDB, VDI struct,
+ * source MFDB; the destination rectangle is clipped.  4 planes, replace
+ * and transparent modes; returns 0 for everything else (c_expand).
+ */
+long CDECL bp_expand_c(void **a, long colours, short sx, short sy, short x1, short y1,
+                       short x2, short y2, short mode);
+
+long CDECL
+bp_expand_c(void **a, long colours, short sx, short sy, short x1, short y1,
+            short x2, short y2, short mode)
+{
+    Virtual *vwk = (Virtual *) ((long) a[0] & ~1L);
+    MFDB *src = (MFDB *) a[3];
+    unsigned short *dform;
+    long dnxln, w = x2 - x1 + 1, h = y2 - y1 + 1;
+    short planes;
+
+    mode = ((mode - 1) & 3) + 1;
+    if (mode > 2 || !src || !src->address || src->bitplanes != 1 || w <= 0 || h <= 0)
+        return 0;
+    dform = dest_form(vwk->real_address, (MFDB *) a[1], &planes, &dnxln);
+    if (planes != 4)
+        return 0;
+    expand4((unsigned short *) ((char *) dform + y1 * dnxln), dnxln,
+            (unsigned short *) src->address + sy * src->wdwidth, src->wdwidth,
+            sx, x1, w, h, mode, bp_pen[colours & 0xff], bp_pen[(colours >> 16) & 0xff]);
+    return 1;
+}
+#endif
+
+static long expand_general(Workstation *wk, MFDB *src, long src_x, long src_y,
+                           MFDB *dst, long dst_x, long dst_y, long w, long h,
+                           long mode, unsigned long fg, unsigned long bg) __attribute__((noinline));
+
 /*
  * Monochrome to colour expansion, the VDI modes:
  *   1 replace          1 bits -> fg, 0 bits -> bg
@@ -336,6 +447,31 @@ long
 fast_expand(Workstation *wk, MFDB *src, long src_x, long src_y,
             MFDB *dst, long dst_x, long dst_y, long w, long h,
             long mode, unsigned long fg, unsigned long bg)
+{
+#if FAST_ASM
+    if ((mode == 1 || mode == 2) && src && src->address && src->bitplanes == 1 && w > 0 && h > 0)
+    {
+        unsigned short *dform;
+        long dnxln;
+        short planes;
+
+        dform = dest_form(wk, dst, &planes, &dnxln);
+        if (planes == 4)
+        {
+            expand4((unsigned short *) ((char *) dform + dst_y * dnxln), dnxln,
+                    (unsigned short *) src->address + src_y * src->wdwidth, src->wdwidth,
+                    src_x, dst_x, w, h, mode, (short) fg, (short) bg);
+            return 1;
+        }
+    }
+#endif
+    return expand_general(wk, src, src_x, src_y, dst, dst_x, dst_y, w, h, mode, fg, bg);
+}
+
+static long
+expand_general(Workstation *wk, MFDB *src, long src_x, long src_y,
+               MFDB *dst, long dst_x, long dst_y, long w, long h,
+               long mode, unsigned long fg, unsigned long bg)
 {
     unsigned long F[4], B[4], X[4];
     unsigned short *dform, *srow;
