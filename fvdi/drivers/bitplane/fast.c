@@ -340,11 +340,13 @@ static const unsigned long pair_long[4] = { 0, 0xffff0000UL, 0x0000ffffUL, 0xfff
  * 4 planes, replace or transparent mode, a source at any position: the
  * whole rectangle (clipped, w and h > 0) in one assembler call, with
  * the set-up kept short since icons are small.  drow and srow are the
- * first destination and source lines, fg and bg pens.
+ * first destination and source lines, fg and bg pens.  bold (the text
+ * buffer of c_text_area only) also sets each pixel's right neighbour:
+ * the word before the source rectangle and the one after it are read.
  */
 static void
 expand4(unsigned short *drow, long dnxln, const unsigned short *srow, long snxwd,
-        long src_x, long dst_x, long w, long h, long mode, short fg, short bg)
+        long src_x, long dst_x, long w, long h, long mode, short fg, short bg, short bold)
 {
     unsigned long c[8], f0, f1, b0, b1, lm, rm;
     unsigned long *d = (unsigned long *) drow + (dst_x >> 4) * 2;
@@ -384,7 +386,7 @@ expand4(unsigned short *drow, long dnxln, const unsigned short *srow, long snxwd
     rm *= 0x10001UL;
 
     /* aligned: every source word is inside the rectangle */
-    if (sh == 0)
+    if (sh == 0 && !bold)
     {
         fast4_rows(d, srow + wbase, h, n, dnxln, snxwd * 2, c, m, lm, rm);
         return;
@@ -395,8 +397,20 @@ expand4(unsigned short *drow, long dnxln, const unsigned short *srow, long snxwd
         c[1] = c[4];
         c[3] = c[5];
     }
-    sh |= wbase == (src_x >> 4) ? 0x100 : 0;
-    sh |= wbase + n <= (src_x + w - 1) >> 4 ? 0x200 : 0;
+    if (bold)
+    {
+        /* the pixel left of each group comes out of the shift */
+        if (sh == 0)
+        {
+            sh = 16;
+            wbase--;
+        }
+        sh |= 0x700;
+    } else
+    {
+        sh |= wbase == (src_x >> 4) ? 0x100 : 0;
+        sh |= wbase + n <= (src_x + w - 1) >> 4 ? 0x200 : 0;
+    }
     fast4s_rows(d, srow + wbase, h, n, dnxln, snxwd * 2, c, m, lm, rm, sh);
 }
 
@@ -427,7 +441,7 @@ bp_expand_c(void **a, long colours, short sx, short sy, short x1, short y1,
         return 0;
     expand4((unsigned short *) ((char *) dform + y1 * dnxln), dnxln,
             (unsigned short *) src->address + sy * src->wdwidth, src->wdwidth,
-            sx, x1, w, h, mode, bp_pen[colours & 0xff], bp_pen[(colours >> 16) & 0xff]);
+            sx, x1, w, h, mode, bp_pen[colours & 0xff], bp_pen[(colours >> 16) & 0xff], 0);
     return 1;
 }
 #endif
@@ -460,7 +474,7 @@ fast_expand(Workstation *wk, MFDB *src, long src_x, long src_y,
         {
             expand4((unsigned short *) ((char *) dform + dst_y * dnxln), dnxln,
                     (unsigned short *) src->address + src_y * src->wdwidth, src->wdwidth,
-                    src_x, dst_x, w, h, mode, (short) fg, (short) bg);
+                    src_x, dst_x, w, h, mode, (short) fg, (short) bg, 0);
             return 1;
         }
     }
@@ -1030,11 +1044,17 @@ long CDECL c_text_area(Virtual *vwk, short *text, long length, long dst_x, long 
     long g0, g1, ngroups, mode, sx;
     short low, high;
     MFDB src;
+    short bold;
 
     vwk = (Virtual *) ((long) vwk & ~1);
     wk = vwk->real_address;
     font = vwk->text.current_font;
-    if (vwk->text.effects || offsets || !font)
+    /* bold alone, as the engine does it (one pixel), on 4 planes */
+    bold = FAST_ASM && vwk->text.effects == 1;
+    if ((vwk->text.effects && !bold) || offsets || !font)
+        return 0;
+    if (bold && (font->thickening != 1 || wk->screen.mfdb.bitplanes != 4 ||
+                 (vwk->mode != 1 && vwk->mode != 2)))
         return 0;
     data = (const unsigned char *) font->extra.unpacked.data;
     if (!data || font->widest.cell != 8 || font->height > TEXT_MAX_ROWS)
@@ -1135,6 +1155,16 @@ long CDECL c_text_area(Virtual *vwk, short *text, long length, long dst_x, long 
     mode = vwk->mode;
     if (mode == 4)
         bg = fg;                        /* as the TOS VDI does */
+
+#if FAST_ASM
+    if (bold)
+    {
+        expand4((unsigned short *) ((char *) wk->screen.mfdb.address + vy1 * wk->screen.wrap),
+                wk->screen.wrap, buf, TPITCH / 2, sx, vx1, vx2 - vx1 + 1, vy2 - vy1 + 1,
+                mode, (short) fg, (short) bg, 1);
+        return 1;
+    }
+#endif
 
     src.address = (short *) buf;
     src.width = TPITCH * 8;

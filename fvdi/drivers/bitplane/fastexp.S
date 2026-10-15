@@ -411,12 +411,14 @@ _shift_rows:
  *
  * 4 planes, the source shifted on the fly: group g of a line takes
  * (S[g] << sh) | (S[g+1] >> (16 - sh)), s pointing to S[0] of the first
- * line.  shf = sh | flag0 << 8 | flag1 << 9: S[0], S[n] may be read (they
+ * line (sh 1 to 16).  shf = sh | flag0 << 8 | flag1 << 9 | bold << 10:
+ * S[0], S[n] may be read (they
  * are outside the source rectangle otherwise, taken as 0; S[1] to S[n-1]
  * always are inside).  The other arguments are those of fast4_rows,
  * except c: X0 B0 X1 B1 in replace mode, F0 F1 in transparent mode.
  * Words of the source that are 0 leave the screen alone in the
- * transparent modes.
+ * transparent modes.  Bold is the engine's one pixel thickening: each
+ * source pixel also set on its right, across the groups.
  */
 	.globl	_fast4s_rows
 
@@ -433,24 +435,47 @@ _shift_rows:
 	move.w	%d1,%d0
 .endm
 
-.macro	getms
+| bold (one pixel of thickening): the pixel left of the group, the
+| last bit shifted out (X), is or-ed in with the group shifted right
+.macro	shiftmb
+	move.l	%d7,%d0
+	lsl.l	%d6,%d0
+	swap	%d7
+	move.l	%d0,%d1
+	roxr.l	#1,%d1
+	or.l	%d1,%d0
+	move.l	%d0,%d1
+	swap	%d1
+	move.w	%d1,%d0
+.endm
+
+.macro	getms b
 	move.w	(%a1)+,%d7
+	.if	\b
+	shiftmb
+	.else
 	shiftm
+	.endif
 .endm
 
 | the last group of a line: S[n] only if it may be read
-.macro	getlast
+.macro	getlast b
 	btst	#9,%d6
 	beq.s	1f
 	move.w	(%a1)+,%d7
 	bra.s	2f
 1:	clr.w	%d7
-2:	shiftm
+2:
+	.if	\b
+	shiftmb
+	.else
+	shiftm
+	.endif
 .endm
 
 | a line: left edge \le, middle groups \mid, right edge \re (d0 holds
 | the source bits when they are called)
-.macro	sline le, mid, re, name
+.macro	sline le, mid, re, name, b
 \name\()line:
 	move.l	%a4,%a0
 	move.l	%a5,%a1
@@ -462,18 +487,18 @@ _shift_rows:
 1:	addq.l	#2,%a1
 	cmp.l	#1,N
 	beq	\name\()one
-	getms
+	getms	\b
 	\le	LMASK
 	lea	(%a0,%a6.l),%a3
 	cmp.l	%a3,%a0
 	beq	\name\()right
 \name\()mid:
-	getms
+	getms	\b
 	\mid
 	cmp.l	%a3,%a0
 	bne	\name\()mid
 \name\()right:
-	getlast
+	getlast	\b
 	\re	RMASK
 \name\()next:
 	add.l	DNXLN,%a4
@@ -482,7 +507,7 @@ _shift_rows:
 	bne	\name\()line
 	bra	done
 \name\()one:
-	getlast
+	getlast	\b
 	\le	LMASK
 	bra	\name\()next
 .endm
@@ -596,6 +621,8 @@ _fast4s_rows:
 	move.l	SHF,%d6
 	move.l	C,%a2
 	move.l	MODE,%d0
+	btst	#10,%d6
+	bne	sb
 	cmp.l	#5,%d0
 	beq	s4p
 	cmp.l	#6,%d0
@@ -605,16 +632,37 @@ _fast4s_rows:
 	cmp.l	#2,%d0
 	beq	s4t
 	movem.l	(%a2),%d2-%d5		| X0 B0 X1 B1
-	sline	srep_edge, srep_mid, srep_edge, s4r
+	sline	srep_edge, srep_mid, srep_edge, s4r, 0
 s4t:
 	movem.l	(%a2),%d2-%d3		| F0 F1
-	sline	str_edge, str_mid, str_edge, s4t
+	sline	str_edge, str_mid, str_edge, s4t, 0
 s4p:
-	sline	spl_edge, spl_mid, spl_edge, s4p
+	sline	spl_edge, spl_mid, spl_edge, s4p, 0
 s4s:
-	sline	sse_edge, sse_mid, sse_edge, s4s
+	sline	sse_edge, sse_mid, sse_edge, s4s, 0
 s4c:
-	sline	scl_edge, scl_mid, scl_edge, s4c
+	sline	scl_edge, scl_mid, scl_edge, s4c, 0
+
+| the same, bold
+sb:	cmp.l	#5,%d0
+	beq	b4p
+	cmp.l	#6,%d0
+	beq	b4s
+	cmp.l	#7,%d0
+	beq	b4c
+	cmp.l	#2,%d0
+	beq	b4t
+	movem.l	(%a2),%d2-%d5
+	sline	srep_edge, srep_mid, srep_edge, b4r, 1
+b4t:
+	movem.l	(%a2),%d2-%d3
+	sline	str_edge, str_mid, str_edge, b4t, 1
+b4p:
+	sline	spl_edge, spl_mid, spl_edge, b4p, 1
+b4s:
+	sline	sse_edge, sse_mid, sse_edge, b4s, 1
+b4c:
+	sline	scl_edge, scl_mid, scl_edge, b4c, 1
 
 /*
  * wk->r.expand, with the engine's registers (engine/blit.s
