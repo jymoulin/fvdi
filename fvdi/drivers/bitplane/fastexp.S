@@ -61,29 +61,39 @@
 	move.w	%d1,%d0
 .endm
 
-| a line: left edge \le, middle groups \mid, right edge \re
-| a0 = line start, a1 = source, a3 = end of the middle groups
-.macro	line le, mid, re, name
+| the lines: left edge \le, middle groups \mid, right edge \re, with
+| the edge masks \lm and \rm and the line counter \cnt (registers
+| where the mode leaves some free); lines of a single group have their
+| own loop.  a0 = line start, a1 = source, a3 = end of the middle groups
+.macro	line le, mid, re, name, lm, rm, cnt
+	cmp.l	#1,N
+	beq	\name\()one
 \name\()line:
 	move.l	%a4,%a0
 	move.l	%a5,%a1
-	\le	LMASK
-	cmp.l	#1,N
-	beq	\name\()next
+	\le	\lm
 	lea	(%a0,%a6.l),%a3
 	cmp.l	%a3,%a0
-	beq	\name\()right
+	beq.s	\name\()right
 \name\()mid:
 	\mid
 	cmp.l	%a3,%a0
-	bne	\name\()mid
+	bne.s	\name\()mid
 \name\()right:
-	\re	RMASK
-\name\()next:
+	\re	\rm
 	add.l	DNXLN,%a4
 	add.l	SNXLN,%a5
-	subq.l	#1,H
+	subq.l	#1,\cnt
 	bne	\name\()line
+	bra	done
+\name\()one:
+	move.l	%a4,%a0
+	move.l	%a5,%a1
+	\le	\lm
+	add.l	DNXLN,%a4
+	add.l	SNXLN,%a5
+	subq.l	#1,\cnt
+	bne.s	\name\()one
 	bra	done
 .endm
 
@@ -336,21 +346,42 @@
 	.if	\np == 4
 	move.l	8(%a2),%d6		| X2
 	move.l	24(%a2),%d7		| B2
+	line	rep_edge\np, rep_mid\np, rep_edge\np, \name\()r, LMASK, RMASK, H
+	.else
+	move.l	LMASK,%d6
+	move.l	H,%d7
+	line	rep_edge\np, rep_mid\np, rep_edge\np, \name\()r, %d6, RMASK, %d7
 	.endif
-	line	rep_edge\np, rep_mid\np, rep_edge\np, \name\()r
 
 \name\()t:
+	move.l	LMASK,%d6
+	move.l	H,%d7
+	.if	\np == 4
 	movem.l	(%a2),%d2-%d5		| F0..F3
-	line	tr_edge\np, tr_mid\np, tr_edge\np, \name\()t
+	line	tr_edge\np, tr_mid\np, tr_edge\np, \name\()t, %d6, RMASK, %d7
+	.else
+	movem.l	(%a2),%d2-%d3		| F0 F1
+	move.l	RMASK,%d5
+	line	tr_edge\np, tr_mid\np, tr_edge\np, \name\()t, %d6, %d5, %d7
+	.endif
 
 \name\()p:
-	line	pl_edge\np, pl_mid\np, pl_edge\np, \name\()p
+	move.l	LMASK,%d6
+	move.l	RMASK,%d5
+	move.l	H,%d7
+	line	pl_edge\np, pl_mid\np, pl_edge\np, \name\()p, %d6, %d5, %d7
 
 \name\()s:
-	line	se_edge\np, se_mid\np, se_edge\np, \name\()s
+	move.l	LMASK,%d6
+	move.l	RMASK,%d5
+	move.l	H,%d7
+	line	se_edge\np, se_mid\np, se_edge\np, \name\()s, %d6, %d5, %d7
 
 \name\()c:
-	line	cl_edge\np, cl_mid\np, cl_edge\np, \name\()c
+	move.l	LMASK,%d6
+	move.l	RMASK,%d5
+	move.l	H,%d7
+	line	cl_edge\np, cl_mid\np, cl_edge\np, \name\()c, %d6, %d5, %d7
 .endm
 
 _fast8_rows:
